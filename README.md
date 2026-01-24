@@ -12,3 +12,4 @@ https://github.com/ivansherbakov9/Points-System-In-TG-BOT-Kilobyte/discussions/1
 Admin(telegram): @gunner951
 
 created by Ivan Shcherbakov
+# ratingMKC
