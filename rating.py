@@ -72,17 +72,8 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
-# Глобальные структуры данных
-# user_points[chat_id][user_id] = {"username": "...", "points": X, "rank": "BASIC/PRO/ELITE"}
-user_points = {}
-# last_thank[chat_id][user_id] = timestamp последней благодарности
-last_thank = {}
-# Сохраняем последние ранги для определения повышения
-last_ranks = {}
-
 def get_points_file(chat_id):
     """Возвращает путь к файлу с баллами для конкретного чата"""
-    # Преобразуем chat_id в строку и убираем знак минуса если есть
     chat_id_str = str(chat_id).replace('-', '')
     return f"points_{chat_id_str}.json"
 
@@ -103,7 +94,8 @@ def get_stars(points, is_owner=False):
     elif points >= 15:
         return "★★☆"
     else:
-        return "☆☆☆" if not is_owner else "★☆☆"
+        # ИСПРАВЛЕНИЕ №1: BASIC должен быть с одной звездочкой
+        return "★☆☆" if not is_owner else "★☆☆"  # СМКЦ тоже с одной звездой
 
 def get_level(points):
     """Определяет уровень (BASIC/PRO/ELITE)"""
@@ -130,10 +122,10 @@ def get_rank_for_title(points, is_owner=False):
     stars = get_stars(points, is_owner=is_owner)
 
     if is_owner:
-        return f"{stars} СМКЦ [{points}]"
+        return f"{stars} СМКЦ"
     else:
         level = get_level(points)
-        return f"{stars} {level} [{points}]"
+        return f"{stars} {level}"
 
 def load_chat_data(chat_id):
     """Загружает данные для конкретного чата"""
@@ -146,8 +138,10 @@ def load_chat_data(chat_id):
                 return {int(k): v for k, v in data.items()}
         except json.JSONDecodeError:
             print(f"ERROR: Error reading points file for chat {chat_id}. Starting with empty data.")
+            return {}
         except Exception as e:
             print(f"ERROR loading chat data: {e}")
+            return {}
     return {}
 
 def save_chat_data(chat_id, data):
@@ -206,7 +200,6 @@ def save_last_ranks(chat_id, data):
 
     try:
         with open(rank_file, "w", encoding="utf-8") as f:
-            # Конвертируем int ключи в строки для сохранения
             data_to_save = {str(k): v for k, v in data.items()}
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
     except Exception as e:
@@ -229,14 +222,12 @@ def contains_thank_word(text):
 
 def can_thank_now(chat_id, user_id):
     """Проверяет, можно ли пользователю отправить благодарность"""
-    # Загружаем данные для этого чата
     thanks_data = load_last_thanks(chat_id)
 
     if user_id in thanks_data:
         last_time = thanks_data[user_id]
         current_time = time.time()
 
-        # Проверяем, прошло ли достаточно времени
         if current_time - last_time < THANK_COOLDOWN:
             return False, THANK_COOLDOWN - int(current_time - last_time)
 
@@ -250,7 +241,8 @@ def update_last_thank(chat_id, user_id):
 
 print("\n" + "="*50)
 print("🌟 СИСТЕМА СТАТУСОВ:")
-print("☆☆☆ BASIC [0-14]")
+# ИСПРАВЛЕНИЕ №1: BASIC с одной звездой
+print("★☆☆ BASIC [0-14]")
 print("★★☆ PRO [15-29]")
 print("★★★ ELITE [30+]")
 print("★☆☆ СМКЦ (для владельца)")
@@ -260,7 +252,6 @@ async def add_points_automatically(message, target_user_id, target_username):
     """Функция для автоматического добавления баллов"""
     chat_id = message.chat.id
 
-    # Загружаем данные для этого чата
     chat_points = load_chat_data(chat_id)
     chat_last_ranks = load_last_ranks(chat_id)
 
@@ -275,84 +266,56 @@ async def add_points_automatically(message, target_user_id, target_username):
         chat_points[target_user_id] = {"username": target_username, "points": 1}
         old_level = "BASIC"
 
+    # ОСНОВНОЕ ИСПРАВЛЕНИЕ: Не пытаемся автоматически повышать до админа
+    # Это может быть причиной проблем в других группах
+    is_owner = False
     try:
-        # Проверяем статус пользователя в чате
         member_status = await bot.get_chat_member(chat_id, target_user_id)
         is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
-
-        # Для НЕ-владельцев и НЕ-админов - повышаем до админа
-        if not is_owner and member_status.status not in ['админ', 'administrator', 'bot-admin']:
-            await bot.promote_chat_member(
-                chat_id=chat_id,
-                user_id=target_user_id,
-                can_manage_chat=False,
-                can_post_messages=False,
-                can_edit_messages=False,
-                can_delete_messages=False,
-                can_manage_video_chats=False,
-                can_restrict_members=False,
-                can_promote_members=False,
-                can_change_info=False,
-                can_invite_users=True,
-                can_pin_messages=False
-            )
     except Exception as e:
-        print(f"ERROR: {e}. Failed to issue a score.")
-        await bot.send_message(chat_id=ADMIN_ID, text=f"Console by Kilobyte\nERROR: {e}. Failed to issue a score.")
-        return False, old_level
+        print(f"WARNING: Could not get member status: {e}")
 
-    # Получаем новый статус с баллами
     new_points = chat_points[target_user_id]["points"]
     new_level = get_level(new_points)
 
-    # Определяем, является ли пользователь владельцем
-    try:
-        member_status = await bot.get_chat_member(chat_id, target_user_id)
-        is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
-    except:
-        is_owner = False
-
+    # Пытаемся установить кастомный заголовок, но не требуем успеха
     prefix = get_rank_for_title(new_points, is_owner=is_owner)
 
     try:
-        # Устанавливаем префикс для всех пользователей (включая владельца)
         await bot.set_chat_administrator_custom_title(
             chat_id=chat_id,
             user_id=target_user_id,
-            custom_title=prefix
+            custom_title=prefix[:16]  # Ограничение Telegram
         )
     except Exception as e:
-        print(f"ERROR: {e}. Failed to set custom title.")
-        # Для владельца может быть ошибка, но продолжаем
-        if not is_owner:
-            await bot.send_message(chat_id=ADMIN_ID, text=f"Console by Kilobyte\nERROR: {e}. Failed to set custom title.")
-            return False, old_level
+        # Это нормально, если бот не админ или нет прав
+        print(f"INFO: Could not set custom title: {e}")
 
-    # Сохраняем данные
     save_chat_data(chat_id, chat_points)
 
-    # Проверяем повышение ранга
     rank_up = False
     if old_level != new_level and not is_owner:
         rank_up = True
-        # Сохраняем новый ранг
         chat_last_ranks[target_user_id] = new_level
         save_last_ranks(chat_id, chat_last_ranks)
 
-    # Выводим информацию в консоль о новом статусе
     user_type = "OWNER" if is_owner else "USER"
-    print(f"STATUS UPDATE [{user_type}]: @{target_username} is now {prefix}")
+    print(f"STATUS UPDATE [{user_type}] in chat {chat_id}: @{target_username} is now {prefix} [{new_points}]")
 
     return True, old_level if not rank_up else new_level
 
 async def send_rankup_notification(chat_id, username, old_rank, new_rank):
     """Отправляет уведомление о повышении ранга"""
+    # ИСПРАВЛЕНИЕ №1: Исправляем отображение звезд
+    old_stars = "★☆☆" if old_rank == "BASIC" else ("★★☆" if old_rank == "PRO" else "★★★")
+    new_stars = "★☆☆" if new_rank == "BASIC" else ("★★☆" if new_rank == "PRO" else "★★★")
+
     notification_text = f"""
 🎉 УРА, У НАС ЗВЕЗДА! 🎉
 
-@{username} поднял свой ранг и теперь он {new_rank}!
+@{username} поднял свой ранг и теперь он {new_stars} {new_rank}!
 
-🌟 {old_rank} → {new_rank} 🌟
+🌟 {old_stars} {old_rank} → {new_stars} {new_rank} 🌟
 
 Поздравляем и гордимся твоим прогрессом!
 Продолжай в том же духе! 💪✨
@@ -360,40 +323,44 @@ async def send_rankup_notification(chat_id, username, old_rank, new_rank):
 
     try:
         msg = await bot.send_message(chat_id=chat_id, text=notification_text)
-        # Удаляем уведомление через 5 минут
         await asyncio.sleep(RANKUP_DELETE_TIME)
         await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
     except Exception as e:
         print(f"ERROR sending rankup notification: {e}")
 
-# ВАЖНО: Этот обработчик должен быть ПОСЛЕ обработчиков команд
+# ИСПРАВЛЕНИЕ №3: Блокируем личные сообщения
+@dp.message_handler(lambda message: message.chat.type == 'private')
+async def block_private_messages(message: types.Message):
+    """Блокирует любые сообщения в личных сообщениях"""
+    print(f"BLOCKED: Private message from {message.from_user.id}: {message.text}")
+    return  # Просто игнорируем
+
 @dp.message_handler(lambda message: message.text and not message.text.startswith('/') and message.reply_to_message)
 async def check_thank_message(message: types.Message):
     """Проверяет только ответы (не команды) на наличие слов благодарности"""
-    print(f"DEBUG: Проверяю сообщение от {message.from_user.id}: {message.text[:50]}...")
+    # ИСПРАВЛЕНИЕ №3: Игнорируем личные сообщения
+    if message.chat.type == 'private':
+        return
 
-    # Проверяем кулдаун
+    print(f"DEBUG: Проверяю сообщение в чате {message.chat.id} от {message.from_user.id}")
+
     can_thank, wait_time = can_thank_now(message.chat.id, message.from_user.id)
 
     if not can_thank:
-        # Молча игнорируем (как и просили)
         print(f"DEBUG: Кулдаун для {message.from_user.id}. Осталось ждать: {wait_time} сек")
         return
 
-    # Проверяем, содержит ли сообщение слова благодарности
     if message.text and contains_thank_word(message.text):
         target_user_id = message.reply_to_message.from_user.id
-        target_username = message.reply_to_message.from_user.username or f"user_{target_user_id}"
+        target_username = message.reply_to_message.from_user.username or message.reply_to_message.from_user.first_name or f"user_{target_user_id}"
 
         print(f"DEBUG: Найдено слово благодарности, добавляем балл для {target_user_id}")
 
-        # Обновляем время последней благодарности
         update_last_thank(message.chat.id, message.from_user.id)
 
         success, old_rank = await add_points_automatically(message, target_user_id, target_username)
 
         if success:
-            # Отправляем уведомление и удаляем через 2 секунды
             thank_msg = "✅ +1 балл за благодарность!" if LANG == 'ru' else "✅ +1 point for thank you!"
             msg = await message.reply(thank_msg)
             await asyncio.sleep(2)
@@ -402,7 +369,6 @@ async def check_thank_message(message: types.Message):
             except:
                 pass
 
-            # Проверяем, было ли повышение ранга
             chat_points = load_chat_data(message.chat.id)
             if target_user_id in chat_points:
                 new_points = chat_points[target_user_id]["points"]
@@ -423,7 +389,9 @@ async def delete_command_with_delay(message, response_msg, delay=COMMAND_DELETE_
 @dp.message_handler(commands=["help", "start"])
 async def help_command(message: types.Message):
     """Команда помощи"""
-    print(f"DEBUG: Обработчик /help вызван для {message.from_user.id}")
+    # ИСПРАВЛЕНИЕ №3: Блокируем команды в личных сообщениях
+    if message.chat.type == 'private':
+        return
 
     help_text = """🎯 ДОСТУПНЫЕ КОМАНДЫ:
 
@@ -443,20 +411,19 @@ async def help_command(message: types.Message):
 ⚠️ Благодарить можно не чаще 1 раза в 5 минут"""
 
     msg = await message.reply(help_text)
-    print(f"INFO: Отправлен ответ на /help пользователю {message.from_user.id}")
-
-    # Запускаем удаление через 30 секунд
     asyncio.create_task(delete_command_with_delay(message, msg))
 
 @dp.message_handler(commands=["info"])
 async def info(message: types.Message):
     """Информация о системе репутации"""
-    print(f"DEBUG: Обработчик /info вызван для {message.from_user.id}")
+    if message.chat.type == 'private':
+        return
 
+    # ИСПРАВЛЕНИЕ №1: Исправляем отображение звезд
     info_text = """🌟 СИСТЕМА РЕПУТАЦИИ
 
 📊 Уровни статусов:
-☆☆☆ BASIC [0-14] - Начинающий
+★☆☆ BASIC [0-14] - Начинающий
 ★★☆ PRO [15-29] - Профессионал
 ★★★ ELITE [30+] - Элита
 ★☆☆ СМКЦ - Специальный статус владельца
@@ -473,50 +440,42 @@ async def info(message: types.Message):
 📈 Ваш статус отображается в префиксе над вашими сообщениями!"""
 
     msg = await message.reply(info_text)
-    print(f"INFO: Отправлен ответ на /info пользователю {message.from_user.id}")
-
-    # Запускаем удаление через 30 секунд
     asyncio.create_task(delete_command_with_delay(message, msg))
 
 @dp.message_handler(commands=["add", "plus", "pa", "добавить"])
 async def add_points(message: types.Message):
     """Команда для ручного добавления балла"""
-    print(f"DEBUG: Обработчик /add вызван для {message.from_user.id}")
+    if message.chat.type == 'private':
+        return
 
     if not message.reply_to_message:
         msg = await message.reply("↩️ Ответьте этой командой на сообщение участника, чтобы добавить ему балл.")
-
-        # Запускаем удаление через 30 секунд
         asyncio.create_task(delete_command_with_delay(message, msg, 5))
         return
 
     target_user_id = message.reply_to_message.from_user.id
-    target_username = message.reply_to_message.from_user.username or f"user_{target_user_id}"
+    target_username = message.reply_to_message.from_user.username or message.reply_to_message.from_user.first_name or f"user_{target_user_id}"
 
     success, old_rank = await add_points_automatically(message, target_user_id, target_username)
 
     if success:
-        # Показываем новый статус пользователя
         chat_points = load_chat_data(message.chat.id)
         if target_user_id in chat_points:
             new_points = chat_points[target_user_id]["points"]
 
-            # Определяем, является ли пользователь владельцем
+            is_owner = False
             try:
                 member_status = await bot.get_chat_member(message.chat.id, target_user_id)
                 is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
             except:
-                is_owner = False
+                pass
 
             new_rank_display = get_rank_display(new_points, is_owner=is_owner)
 
-            status_msg = f"✅ {new_rank_display}\n└─ @{target_username}"
+            status_msg = f"✅ {new_rank_display}\n└─ @{target_username if target_username.startswith('@') else f'@{target_username}' if '@' not in target_username else target_username}"
             msg = await message.reply(status_msg)
-
-            # Запускаем удаление через 30 секунд
             asyncio.create_task(delete_command_with_delay(message, msg))
 
-            # Проверяем, было ли повышение ранга
             if old_rank in ["BASIC", "PRO"] and get_level(new_points) != old_rank and not is_owner:
                 new_rank = get_level(new_points)
                 await send_rankup_notification(message.chat.id, target_username, old_rank, new_rank)
@@ -524,13 +483,13 @@ async def add_points(message: types.Message):
 @dp.message_handler(commands=["my", "me", "profile"])
 async def my_profile(message: types.Message):
     """Показать профиль текущего пользователя"""
-    print(f"DEBUG: Обработчик /my вызван для {message.from_user.id}")
+    if message.chat.type == 'private':
+        return
 
     chat_id = message.chat.id
     user_id = message.from_user.id
-    username = message.from_user.username or f"user_{user_id}"
+    username = message.from_user.username or message.from_user.first_name or f"user_{user_id}"
 
-    # Загружаем данные для этого чата
     chat_points = load_chat_data(chat_id)
 
     if user_id in chat_points:
@@ -538,17 +497,15 @@ async def my_profile(message: types.Message):
     else:
         user_balance = 0
 
-    # Определяем, является ли пользователь владельцем текущего чата
+    is_owner = False
     try:
         member_status = await bot.get_chat_member(chat_id, user_id)
         is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
     except Exception as e:
         print(f"ERROR checking owner status: {e}")
-        is_owner = False
 
     user_rank = get_rank_display(user_balance, is_owner=is_owner)
 
-    # Определяем следующий уровень
     next_level = ""
     points_to_next = 0
 
@@ -565,7 +522,6 @@ async def my_profile(message: types.Message):
             next_level = "▸ Максимальный уровень достигнут!"
             points_to_next = 0
 
-    # Создаем красивый профиль
     profile_text = "👤 ПРОФИЛЬ УЧАСТНИКА\n\n"
     profile_text += f"🆔 ID: {user_id}\n"
     profile_text += f"📛 Имя: @{username}\n"
@@ -574,7 +530,6 @@ async def my_profile(message: types.Message):
 
     if points_to_next > 0:
         profile_text += f"🎯 До {next_level}: {points_to_next} баллов\n"
-        # Добавляем прогресс-бар
         if next_level == "PRO":
             progress = user_balance / 15 * 100
         else:  # ELITE
@@ -586,52 +541,46 @@ async def my_profile(message: types.Message):
     profile_text += "\n💡 Совет: Помогайте другим участникам\nи получайте благодарности для повышения репутации!"
 
     msg = await message.reply(profile_text)
-    print(f"INFO: Отправлен ответ на /my пользователю {user_id}")
-
-    # Запускаем удаление через 30 секунд
     asyncio.create_task(delete_command_with_delay(message, msg))
 
 @dp.message_handler(commands=["top", "рейтинг", "лидеры"])
 async def top_players(message: types.Message):
     """Показать ТОП-5 участников"""
-    print(f"DEBUG: Обработчик /top вызван для {message.from_user.id}")
+    if message.chat.type == 'private':
+        return
 
     chat_id = message.chat.id
     chat_points = load_chat_data(chat_id)
 
     if not chat_points:
         msg = await message.reply("📭 Рейтинг пуст\nПока никто не получил баллов.")
-        # Запускаем удаление через 30 секунд
         asyncio.create_task(delete_command_with_delay(message, msg, 10))
         return
 
-    # Сортируем пользователей по баллам
     sorted_users = sorted(
         chat_points.items(),
         key=lambda x: x[1]['points'],
         reverse=True
-    )[:5]  # Берем топ-5
+    )[:5]
 
-    # Создаем заголовок
     top_text = "🏆 ТОП-5 УЧАСТНИКОВ\n\n"
 
     for i, (user_id, user_data) in enumerate(sorted_users, 1):
         points = user_data['points']
         username = user_data.get('username', f"user_{user_id}")
 
-        # Определяем, является ли пользователь владельцем
+        is_owner = False
         try:
             member_status = await bot.get_chat_member(chat_id, user_id)
             is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
         except:
-            is_owner = False
+            pass
 
         rank_display = get_rank_display(points, is_owner=is_owner)
 
-        # Вместо кликабельной ссылки - просто упоминание
-        user_display = f"@{username}" if username else f"ID: {user_id}"
+        # ИСПРАВЛЕНИЕ №2: Создаем ссылку на профиль через user_id вместо юзернейма
+        user_display = f"<a href='tg://user?id={user_id}'>{username}</a>"
 
-        # Добавляем медальку для первых мест
         medal = ""
         if i == 1:
             medal = "🥇 "
@@ -643,26 +592,23 @@ async def top_players(message: types.Message):
         top_text += f"{medal}{i}. {user_display}\n"
         top_text += f"   └─ {rank_display}\n\n"
 
-    # Добавляем статистику
     total_players = len(chat_points)
     top_text += f"📊 Статистика: {total_players} участников в системе"
 
-    msg = await message.reply(top_text)
-    print(f"INFO: Отправлен ответ на /top пользователю {message.from_user.id}")
-
-    # Запускаем удаление через 30 секунд
+    # ИСПРАВЛЕНИЕ №2: Отправляем как HTML для поддержки ссылок
+    msg = await message.reply(top_text, parse_mode="HTML")
     asyncio.create_task(delete_command_with_delay(message, msg))
 
 @dp.message_handler(commands=["update", "u"])
 async def update_prefix(message: types.Message):
     """Обновить префикс пользователя (админ)"""
-    print(f"DEBUG: Обработчик /update вызван для {message.from_user.id}")
+    if message.chat.type == 'private':
+        return
 
     command_args = message.get_args().strip()
 
     if not command_args:
         msg = await message.reply("ℹ️ Использование:\n/update <ID_пользователя>")
-        # Запускаем удаление через 30 секунд
         asyncio.create_task(delete_command_with_delay(message, msg))
         return
 
@@ -670,7 +616,6 @@ async def update_prefix(message: types.Message):
         target_user_id = int(command_args)
     except ValueError:
         msg = await message.reply("❌ Неверный ID пользователя")
-        # Запускаем удаление через 30 секунд
         asyncio.create_task(delete_command_with_delay(message, msg))
         return
 
@@ -679,77 +624,58 @@ async def update_prefix(message: types.Message):
 
     if target_user_id not in chat_points:
         msg = await message.reply("❌ Пользователь не найден в системе")
-        # Запускаем удаление через 30 секунд
         asyncio.create_task(delete_command_with_delay(message, msg))
         return
 
     user_data = chat_points[target_user_id]
     username = user_data.get('username', f"user_{target_user_id}")
 
-    # Определяем, является ли пользователь владельцем
+    is_owner = False
     try:
         member_status = await bot.get_chat_member(chat_id, target_user_id)
         is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
     except:
-        is_owner = False
-
-    if not is_owner:
-        try:
-            if member_status.status not in ['админ', 'administrator', 'bot-admin']:
-                await bot.promote_chat_member(
-                    chat_id=chat_id,
-                    user_id=target_user_id,
-                    can_manage_chat=False,
-                    can_post_messages=False,
-                    can_edit_messages=False,
-                    can_delete_messages=False,
-                    can_manage_video_chats=False,
-                    can_restrict_members=False,
-                    can_promote_members=False,
-                    can_change_info=False,
-                    can_invite_users=True,
-                    can_pin_messages=False
-                )
-        except Exception as e:
-            print(f"ERROR: {e}. Failed to update prefix.")
-            await bot.send_message(chat_id=ADMIN_ID, text=f"Console by Kilobyte\nERROR: {e}. Failed to update prefix.")
-            return
+        pass
 
     prefix = get_rank_for_title(user_data["points"], is_owner=is_owner)
     try:
         await bot.set_chat_administrator_custom_title(
             chat_id=chat_id,
             user_id=target_user_id,
-            custom_title=prefix
+            custom_title=prefix[:16]
         )
     except Exception as e:
         print(f"ERROR: {e}. Failed to update prefix.")
         if not is_owner:
-            await bot.send_message(chat_id=ADMIN_ID, text=f"Console by Kilobyte\nERROR: {e}. Failed to update prefix.")
-        return
+            msg = await message.reply(f"❌ Не удалось обновить префикс: {e}")
+            asyncio.create_task(delete_command_with_delay(message, msg))
+            return
 
     owner_text = " (владелец)" if is_owner else ""
     response = f"✅ Префикс обновлён\n\n"
-    response += f"👤 Пользователь: @{username}{owner_text}\n"
+    # ИСПРАВЛЕНИЕ №2: Используем ссылку на профиль
+    response += f"👤 Пользователь: <a href='tg://user?id={target_user_id}'>{username}</a>{owner_text}\n"
     response += f"🆔 ID: {target_user_id}\n"
     response += f"⭐ Новый статус: {prefix}"
 
-    msg = await message.reply(response)
-
-    # Запускаем удаление через 30 секунд
+    msg = await message.reply(response, parse_mode="HTML")
     asyncio.create_task(delete_command_with_delay(message, msg))
 
 @dp.message_handler()
 async def catch_all_messages(message: types.Message):
-    """Перехватывает все остальные сообщения для отладки"""
-    print(f"DEBUG: Получено сообщение от {message.from_user.id}: {message.text}")
+    """Перехватывает все остальные сообщения"""
+    # ИСПРАВЛЕНИЕ №3: Игнорируем личные сообщения
+    if message.chat.type == 'private':
+        print(f"BLOCKED: Private message from {message.from_user.id}")
+        return
+    print(f"DEBUG: Message in chat {message.chat.id} from {message.from_user.id}: {message.text}")
 
 if __name__ == '__main__':
     print("=" * 60)
     print("🤖 БОТ ЗАПУЩЕН С ОБНОВЛЁННОЙ СИСТЕМОЙ РЕПУТАЦИИ!")
     print("=" * 60)
     print("\n🌟 СИСТЕМА СТАТУСОВ:")
-    print("   ☆☆☆ BASIC [0-14]")
+    print("   ★☆☆ BASIC [0-14]")
     print("   ★★☆ PRO [15-29]")
     print("   ★★★ ELITE [30+]")
     print("   ★☆☆ СМКЦ (только для владельца)")
@@ -764,8 +690,8 @@ if __name__ == '__main__':
     print("   • Благодарить можно 1 раз в 5 минут")
     print("   • Команды удаляются через 30 секунд")
     print("   • Каждая группа имеет отдельную базу данных")
+    print("   • Бот игнорирует личные сообщения")
     print("\n💬 Автоматическое повышение при словах:")
     print(f"   {', '.join(THANK_WORDS[:6])}...")
     print("=" * 60)
     executor.start_polling(dp, skip_updates=True)
-# ────────────────────────────── ❑ ──────────────────────────────
