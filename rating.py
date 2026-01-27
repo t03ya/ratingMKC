@@ -255,13 +255,13 @@ async def make_user_admin_for_prefix(chat_id, user_id):
     try:
         print(f"DEBUG: Пытаюсь сделать пользователя {user_id} администратором в чате {chat_id}")
         
-        # Сначала получаем текущий статус пользователя
+        # Сначала проверяем, не является ли пользователь уже администратором
         try:
             member_status = await bot.get_chat_member(chat_id, user_id)
             current_status = member_status.status
             print(f"DEBUG: Текущий статус пользователя {user_id}: {current_status}")
             
-            # Если уже админ или владелец, ничего не делаем
+            # Если уже админ или владелец, возвращаем успех
             if current_status in ['administrator', 'creator']:
                 print(f"DEBUG: Пользователь {user_id} уже администратор")
                 return True
@@ -269,34 +269,68 @@ async def make_user_admin_for_prefix(chat_id, user_id):
             print(f"DEBUG: Ошибка при получении статуса: {e}")
         
         # Делаем пользователя администратором с МИНИМАЛЬНЫМИ правами
-        # Все права отключаем, чтобы у пользователя был только префикс
-        success = await bot.promote_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            can_change_info=False,
-            can_post_messages=False,
-            can_edit_messages=False,
-            can_delete_messages=False,
-            can_invite_users=False,
-            can_restrict_members=False,
-            can_pin_messages=False,
-            can_promote_members=False,
-            can_manage_chat=False,
-            can_manage_video_chats=False,
-            can_manage_topics=False
-        )
-        
-        if success:
-            print(f"SUCCESS: Пользователь {user_id} успешно назначен администратором (с минимальными правами)")
-            # Даем Telegram время обработать изменение прав
-            await asyncio.sleep(1)
-            return True
-        else:
-            print(f"ERROR: Не удалось назначить пользователя {user_id} администратором")
+        # ВАЖНО: нужно включить хотя бы одно право, иначе Telegram может отклонить
+        try:
+            # Пробуем сделать админом с минимальными правами
+            success = await bot.promote_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                can_change_info=False,        # Не может менять инфу чата
+                can_post_messages=False,      # Не может постить сообщения
+                can_edit_messages=False,      # Не может редактировать сообщения
+                can_delete_messages=False,    # Не может удалять сообщения
+                can_invite_users=True,        # Может приглашать пользователей (минимальное право)
+                can_restrict_members=False,   # Не может ограничивать участников
+                can_pin_messages=False,       # Не может закреплять сообщения
+                can_promote_members=False,    # Не может назначать админов
+                can_manage_chat=False,        # Не может управлять чатом
+                can_manage_video_chats=False, # Не может управлять видеочатами
+                can_manage_topics=False       # Не может управлять темами
+            )
+            
+            if success:
+                print(f"SUCCESS: Пользователь {user_id} успешно назначен администратором")
+                # Даем Telegram время обработать изменение прав
+                await asyncio.sleep(2)
+                return True
+            else:
+                print(f"ERROR: Не удалось назначить пользователя {user_id} администратором")
+                # Пробуем альтернативный вариант с другим набором прав
+                try:
+                    success2 = await bot.promote_chat_member(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        can_change_info=False,
+                        can_post_messages=False,
+                        can_edit_messages=False,
+                        can_delete_messages=False,
+                        can_invite_users=False,
+                        can_restrict_members=False,
+                        can_pin_messages=False,
+                        can_promote_members=False,
+                        can_manage_chat=False,
+                        can_manage_video_chats=False,
+                        can_manage_topics=False
+                    )
+                    
+                    if success2:
+                        print(f"SUCCESS (вариант 2): Пользователь {user_id} назначен администратором")
+                        await asyncio.sleep(2)
+                        return True
+                    else:
+                        print(f"ERROR: Оба варианта не сработали для пользователя {user_id}")
+                        return False
+                        
+                except Exception as e2:
+                    print(f"ERROR при альтернативном назначении: {e2}")
+                    return False
+                    
+        except Exception as e:
+            print(f"ERROR: Исключение при назначении администратора: {e}")
             return False
             
     except Exception as e:
-        print(f"ERROR: Ошибка при назначении администратора: {e}")
+        print(f"ERROR: Общая ошибка при назначении администратора: {e}")
         return False
 
 async def set_user_prefix(chat_id, user_id, points, is_owner=False):
@@ -307,39 +341,52 @@ async def set_user_prefix(chat_id, user_id, points, is_owner=False):
         
         print(f"DEBUG: Устанавливаю префикс '{prefix}' для пользователя {user_id}")
         
-        # Проверяем, является ли пользователь администратором
+        # Сначала убеждаемся, что пользователь админ
         try:
             member_status = await bot.get_chat_member(chat_id, user_id)
             user_is_admin = member_status.status in ['administrator', 'creator']
             
             if not user_is_admin:
                 print(f"DEBUG: Пользователь {user_id} не администратор, пытаюсь сделать админом...")
-                # Пытаемся сделать пользователя администратором
                 admin_success = await make_user_admin_for_prefix(chat_id, user_id)
                 if not admin_success:
                     print(f"ERROR: Не удалось сделать пользователя {user_id} администратором для префикса")
                     return False
-                # Даем время Telegram обработать
-                await asyncio.sleep(1)
+                # Даем больше времени Telegram обработать
+                await asyncio.sleep(3)
         except Exception as e:
             print(f"DEBUG: Ошибка при проверке статуса: {e}")
             return False
         
-        # Устанавливаем кастомный заголовок (префикс)
-        # Ограничение Telegram: максимум 16 символов
-        prefix_to_set = prefix[:16]
-        
-        await bot.set_chat_administrator_custom_title(
-            chat_id=chat_id,
-            user_id=user_id,
-            custom_title=prefix_to_set
-        )
-        
-        print(f"SUCCESS: Префикс '{prefix_to_set}' установлен для пользователя {user_id}")
-        return True
+        # Пробуем установить префикс несколько раз с задержкой
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                # Ограничение Telegram: максимум 16 символов для префикса
+                prefix_to_set = prefix[:16]
+                
+                print(f"DEBUG: Попытка {attempt + 1} установить префикс '{prefix_to_set}'")
+                
+                await bot.set_chat_administrator_custom_title(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    custom_title=prefix_to_set
+                )
+                
+                print(f"SUCCESS: Префикс '{prefix_to_set}' установлен для пользователя {user_id}")
+                return True
+                
+            except Exception as e:
+                print(f"ERROR (попытка {attempt + 1}): Не удалось установить префикс: {e}")
+                if attempt < max_attempts - 1:
+                    print(f"DEBUG: Жду 2 секунды перед следующей попыткой...")
+                    await asyncio.sleep(2)
+                else:
+                    print(f"ERROR: Все попытки установить префикс провалились")
+                    return False
         
     except Exception as e:
-        print(f"ERROR: Не удалось установить префикс: {e}")
+        print(f"ERROR: Критическая ошибка при установке префикса: {e}")
         return False
 
 async def add_points_automatically(message, target_user_id, target_username):
@@ -349,15 +396,17 @@ async def add_points_automatically(message, target_user_id, target_username):
     chat_points = load_chat_data(chat_id)
     chat_last_ranks = load_last_ranks(chat_id)
 
+    # Сохраняем старые данные для сравнения
     if target_user_id in chat_points:
+        old_points = chat_points[target_user_id]["points"]
         chat_points[target_user_id]["points"] += 1
-        old_points = chat_points[target_user_id]["points"] - 1
         old_level = get_level(old_points)
 
         if chat_points[target_user_id]["username"] != target_username:
             chat_points[target_user_id]["username"] = target_username
     else:
         chat_points[target_user_id] = {"username": target_username, "points": 1}
+        old_points = 0
         old_level = "BASIC"
 
     # Определяем, является ли пользователь владельцем
@@ -373,13 +422,19 @@ async def add_points_automatically(message, target_user_id, target_username):
     new_level = get_level(new_points)
     
     # ВАЖНО: Устанавливаем префикс КАЖДЫЙ РАЗ при начислении баллов
-    # Это гарантирует, что префикс всегда актуальный
-    prefix_success = await set_user_prefix(chat_id, target_user_id, new_points, is_owner)
+    print(f"DEBUG: Начисляю балл пользователю {target_user_id}. Было: {old_points}, стало: {new_points}")
     
-    if prefix_success:
-        print(f"SUCCESS: Префикс обновлен для {target_user_id} -> {get_rank_for_title(new_points, is_owner)}")
+    # Только для НЕ-владельцев пытаемся установить префикс
+    if not is_owner:
+        prefix_success = await set_user_prefix(chat_id, target_user_id, new_points, is_owner)
+        
+        if prefix_success:
+            print(f"SUCCESS: Префикс обновлен для {target_user_id} -> {get_rank_for_title(new_points, is_owner)}")
+        else:
+            print(f"WARNING: Не удалось обновить префикс для {target_user_id}")
+            # Не прерываем выполнение, продолжаем сохранять баллы
     else:
-        print(f"WARNING: Не удалось обновить префикс для {target_user_id}")
+        print(f"DEBUG: Пользователь {target_user_id} владелец, префикс не обновляем")
 
     save_chat_data(chat_id, chat_points)
 
@@ -498,13 +553,14 @@ async def help_command(message: types.Message):
 
 🤖 Автоматически:
 Баллы добавляются при словах: спасибо, благодарю, спс, саул, от души, мерси, спасибки и др.
-⚠️ Благодарить можно не чаще 1 раза в 5 минут
+⚠️ Благодарить можно не чаще 1 раз в 5 минут
 
 ⚠️ ВАЖНО О ПРЕФИКСАХ:
-• Бот автоматически делает пользователей администраторами при первом начислении баллов
+• Бот автоматически делает пользователей администраторами при начислении баллов
 • Все административные права отключены (только префикс отображается)
 • Префикс обновляется при каждом начислении баллов
-• Формат префикса: ★☆☆ BASIC [8]"""
+• Формат префикса: ★☆☆ BASIC [8]
+• Бот должен быть администратором с правом назначать администраторов"""
 
     msg = await message.reply(help_text)
     asyncio.create_task(delete_command_with_delay(message, msg))
@@ -534,7 +590,7 @@ async def info(message: types.Message):
 • При повышении ранга все участники увидят праздничное уведомление! 🎉
 
 📈 Автоматические действия:
-• При первом начислении баллов бот сделает вас администратором (без прав)
+• При начислении баллов бот сделает вас администратором (без прав)
 • Ваш статус будет отображаться в префиксе над сообщениями: ★☆☆ BASIC [8]
 • Префикс обновляется автоматически при каждом изменении баллов"""
 
@@ -786,7 +842,7 @@ if __name__ == '__main__':
     print("   /update <ID> - обновить префикс")
     print("\n⚠️ АВТОМАТИЧЕСКИЕ ДЕЙСТВИЯ:")
     print("   1. Бот автоматически делает пользователей администраторами")
-    print("   2. Все административные права отключены")
+    print("   2. Все административные права отключены (кроме приглашения)")
     print("   3. Префикс отображается в виде: ★☆☆ BASIC [8]")
     print("   4. Префикс обновляется при КАЖДОМ начислении баллов")
     print("\n⏰ ОГРАНИЧЕНИЯ:")
