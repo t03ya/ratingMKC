@@ -49,7 +49,7 @@ try:
 except (FileNotFoundError, ValueError):
     LANG = input("Enter the language('ru'/'eng'): ")
 
-    while LANG != "ru" and LANG != "eng":
+    while LANG != "ru" and LANG != "eng':
         LANG = input("Enter the language('ru'/'eng'): ")
 
     with open(LANG_FILE, 'w') as file:
@@ -249,6 +249,8 @@ def extract_username_and_points(text):
     patterns = [
         r'@(\w+)\s+(\d+)',  # @username 10
         r'(\d+)\s+@(\w+)',  # 10 @username
+        r'@([a-zA-Z0-9_]{5,32})\s+(\d+)',  # @username с подчеркиваниями
+        r'(\d+)\s+@([a-zA-Z0-9_]{5,32})',  # 10 @username с подчеркиваниями
     ]
     
     for pattern in patterns:
@@ -261,18 +263,40 @@ def extract_username_and_points(text):
     
     return None, 0
 
-async def get_user_id_from_mention(chat_id, username):
-    """Получает ID пользователя по username"""
+async def get_user_id_from_mention(chat_id, username_input):
+    """Получает ID пользователя по username - исправленная версия"""
     try:
         # Убираем @ если есть
-        username = username.lstrip('@')
+        username = username_input.lstrip('@')
+        print(f"DEBUG: Ищу пользователя с username '{username}' в чате {chat_id}")
         
-        # Пытаемся получить информацию о пользователе через поиск участников
-        chat_member = await bot.get_chat_member(chat_id, f"@{username}")
-        return chat_member.user.id
-    except Exception as e:
-        print(f"ERROR: Не удалось найти пользователя @{username}: {e}")
+        # Сначала ищем в сохраненных данных чата
+        chat_points = load_chat_data(chat_id)
+        
+        # Ищем пользователя по username в сохраненных данных
+        for user_id, user_data in chat_points.items():
+            user_username = user_data.get('username', '').lstrip('@')
+            if user_username and user_username.lower() == username.lower():
+                print(f"DEBUG: Нашел пользователя {user_id} по username в сохраненных данных")
+                return user_id
+        
+        # Если не нашли в данных, пытаемся через Telegram API
+        # Но для этого нужно перебрать всех участников, что может быть долго
+        # Вместо этого предлагаем использовать ID или ответ на сообщение
+        
+        print(f"DEBUG: Пользователь @{username} не найден в сохраненных данных")
         return None
+            
+    except Exception as e:
+        print(f"ERROR: Не удалось найти пользователя @{username_input}: {e}")
+        return None
+
+async def find_user_in_chat_by_username(chat_id, username):
+    """Пытается найти пользователя в чате по username (альтернативный метод)"""
+    # Этот метод может быть медленным для больших чатов
+    # Лучше использовать ID или ответ на сообщение
+    print(f"WARNING: Поиск по username может быть медленным. Рекомендуется использовать ID или ответ на сообщение.")
+    return None
 
 async def change_user_points(message, target_username, points_change, is_addition=True):
     """Изменяет баллы пользователя и обновляет префикс"""
@@ -282,22 +306,47 @@ async def change_user_points(message, target_username, points_change, is_additio
     user_id = await get_user_id_from_mention(chat_id, target_username)
     
     if not user_id:
-        return False, f"❌ Пользователь @{target_username} не найден в чате"
+        # Пользователь не найден в сохраненных данных
+        # Предлагаем альтернативные варианты
+        error_msg = f"""❌ Пользователь @{target_username} не найден в системе этого чата.
+
+Возможные причины:
+1. Пользователь еще не получал баллов в этом чате
+2. Username был изменен
+
+Как добавить баллы:
+• Используйте команду /add (ответом на сообщение пользователя)
+• Узнайте ID пользователя и используйте: /update ID
+• Попросите пользователя получить хотя бы 1 балл через благодарность"""
+        
+        return False, error_msg
     
     # Загружаем данные чата
     chat_points = load_chat_data(chat_id)
     chat_last_ranks = load_last_ranks(chat_id)
     
-    # Определяем, является ли пользователь владельцем
-    is_owner = False
-    try:
-        member_status = await bot.get_chat_member(chat_id, user_id)
-        is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
-    except:
-        pass
-    
-    # Сохраняем старые данные
-    if user_id in chat_points:
+    # Проверяем, есть ли пользователь в данных чата
+    if user_id not in chat_points:
+        # Пользователь есть в поиске, но нет в данных - добавляем
+        try:
+            # Получаем актуальный username
+            member = await bot.get_chat_member(chat_id, user_id)
+            current_username = member.user.username or member.user.first_name or f"user_{user_id}"
+            
+            # Инициализируем пользователя
+            if is_addition:
+                chat_points[user_id] = {"username": current_username, "points": points_change}
+                old_points = 0
+                new_points = points_change
+                action_word = "добавлено"
+            else:
+                # Нельзя вычитать у пользователя без баллов
+                return False, f"❌ Пользователь @{target_username} еще не имеет баллов"
+        except Exception as e:
+            print(f"ERROR: Не удалось получить информацию о пользователе {user_id}: {e}")
+            return False, f"❌ Ошибка при получении информации о пользователе @{target_username}"
+    else:
+        # Пользователь уже в системе - изменяем баллы
         old_points = chat_points[user_id]["points"]
         old_level = get_level(old_points)
         
@@ -310,27 +359,16 @@ async def change_user_points(message, target_username, points_change, is_additio
             action_word = "вычтено"
         
         chat_points[user_id]["points"] = new_points
-    else:
-        # Пользователь еще не в системе
-        if is_addition:
-            new_points = points_change
-            action_word = "добавлено"
-            old_points = 0
-            old_level = "BASIC"
-        else:
-            # Нельзя вычитать у пользователя, которого нет в системе
-            return False, f"❌ Пользователь @{target_username} еще не имеет баллов"
-        
-        # Получаем username для записи
-        try:
-            member = await bot.get_chat_member(chat_id, user_id)
-            username = member.user.username or member.user.first_name or f"user_{user_id}"
-        except:
-            username = target_username
-            
-        chat_points[user_id] = {"username": username, "points": new_points}
     
-    new_level = get_level(new_points)
+    # Определяем, является ли пользователь владельцем
+    is_owner = False
+    try:
+        member_status = await bot.get_chat_member(chat_id, user_id)
+        is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
+    except:
+        pass
+    
+    new_level = get_level(new_points) if user_id in chat_points else "BASIC"
     
     # Устанавливаем/обновляем префикс
     if not is_owner:
@@ -348,18 +386,19 @@ async def change_user_points(message, target_username, points_change, is_additio
     
     # Проверяем изменение ранга
     rank_change = ""
-    if old_level != new_level and not is_owner:
+    if 'old_level' in locals() and old_level != new_level and not is_owner:
         rank_change = f"\n🎉 Изменение ранга: {old_level} → {new_level}"
         chat_last_ranks[user_id] = new_level
         save_last_ranks(chat_id, chat_last_ranks)
     
     # Формируем сообщение
+    old_points_display = old_points if 'old_points' in locals() else 0
     result_msg = f"""✅ Успешно!
     
 👤 Пользователь: @{target_username}
 🆔 ID: {user_id}
 📊 Баллов {action_word}: {points_change}
-🏆 Было: {old_points} | Стало: {new_points}
+🏆 Было: {old_points_display} | Стало: {new_points}
 ⭐ Новый статус: {get_rank_display(new_points, is_owner)}
 {prefix_msg}{rank_change}"""
     
@@ -673,8 +712,8 @@ async def help_command(message: types.Message):
 
 ➕ Добавление баллов:
 /add или /plus - добавить балл участнику (ответом на его сообщение)
-/plus @username N - добавить N баллов пользователю (только создатель)
-/minus @username N - вычесть N баллов у пользователя (только создатель)
+/plus @username N - добавить N баллов пользователю (только создатель)*
+/minus @username N - вычесть N баллов у пользователя (только создатель)*
 
 📊 Информация:
 /my - мой профиль (баллы и статус)
@@ -682,7 +721,8 @@ async def help_command(message: types.Message):
 /info - информация о системе репутации
 
 ⚙️ Админ-команды:
-/update @username - обновить префикс пользователя (можно тегнуть) (только создатель)
+/update @username - обновить префикс пользователя (только создатель)*
+/update 123456789 - обновить префикс по ID (только создатель)
 
 🤖 Автоматически:
 Баллы добавляются при словах: спасибо, благодарю, спс, саул, от души, мерси, спасибки и др.
@@ -693,7 +733,10 @@ async def help_command(message: types.Message):
 • Все административные права отключены (только префикс отображается)
 • Префикс обновляется при каждом начислении баллов
 • Формат префикса: ★☆☆ BASIC [8]
-• Бот должен быть администратором с правом назначать администраторов{creator_info}"""
+• Бот должен быть администратором с правом назначать администраторов
+
+📝 *Примечание: Команды с @username работают только если пользователь уже получал баллы в этом чате.
+   Для новых пользователей используйте /add (ответом на сообщение).{creator_info}"""
 
     msg = await message.reply(help_text)
     asyncio.create_task(delete_command_with_delay(message, msg))
@@ -705,7 +748,7 @@ async def info(message: types.Message):
         return
         
     # ИСПРАВЛЕНИЕ: Исправляем отображение звезд
-    info_text = """🌟 СИСТЕМА РЕПУТАЦИИ
+    info_text = f"""🌟 СИСТЕМА РЕПУТАЦИИ
 
 📊 Уровни статусов:
 ★☆☆ BASIC [0-14] - Начинающий
@@ -728,12 +771,12 @@ async def info(message: types.Message):
 • Ваш статус будет отображаться в префиксе над сообщениями: ★☆☆ BASIC [8]
 • Префикс обновляется автоматически при каждом изменении баллов
 
-👑 Создатель: ID 8331388910"""
+👑 Создатель: ID {CREATOR_ID}"""
 
     msg = await message.reply(info_text)
     asyncio.create_task(delete_command_with_delay(message, msg))
 
-@dp.message_handler(commands=["add", "plus", "pa", "добавить"])
+@dp.message_handler(commands=["add", "pa", "добавить"])
 async def add_points(message: types.Message):
     """Команда для ручного добавления балла (ответом на сообщение)"""
     if message.chat.type == 'private':
@@ -794,10 +837,13 @@ async def plus_points(message: types.Message):
 
 Примеры:
 /plus @ulia 10 - добавить 10 баллов пользователю @ulia
-/plus 5 @alex - добавить 5 баллов пользователю @alex"""
+/plus 5 @alex - добавить 5 баллов пользователю @alex
+
+⚠️ Важно: Команда работает только если пользователь уже получал баллы в этом чате.
+Для новых пользователей используйте /add (ответом на сообщение)."""
         
         msg = await message.reply(help_text)
-        asyncio.create_task(delete_command_with_delay(message, msg, 10))
+        asyncio.create_task(delete_command_with_delay(message, msg, 15))
         return
     
     # Извлекаем username и количество баллов
@@ -808,8 +854,8 @@ async def plus_points(message: types.Message):
         asyncio.create_task(delete_command_with_delay(message, msg, 5))
         return
     
-    if points > 100:
-        msg = await message.reply("⚠️ Слишком много баллов за раз. Максимум 100 за одну операцию.")
+    if points > 1000:
+        msg = await message.reply("⚠️ Слишком много баллов за раз. Максимум 1000 за одну операцию.")
         asyncio.create_task(delete_command_with_delay(message, msg, 5))
         return
     
@@ -842,10 +888,13 @@ async def minus_points(message: types.Message):
 
 Примеры:
 /minus @ulia 10 - вычесть 10 баллов у пользователя @ulia
-/minus 5 @alex - вычесть 5 баллов у пользователя @alex"""
+/minus 5 @alex - вычесть 5 баллов у пользователя @alex
+
+⚠️ Важно: Команда работает только если пользователь уже получал баллы в этом чате.
+Для новых пользователей используйте /add (ответом на сообщение)."""
         
         msg = await message.reply(help_text)
-        asyncio.create_task(delete_command_with_delay(message, msg, 10))
+        asyncio.create_task(delete_command_with_delay(message, msg, 15))
         return
     
     # Извлекаем username и количество баллов
@@ -856,8 +905,8 @@ async def minus_points(message: types.Message):
         asyncio.create_task(delete_command_with_delay(message, msg, 5))
         return
     
-    if points > 100:
-        msg = await message.reply("⚠️ Слишком много баллов за раз. Максимум 100 за одну операцию.")
+    if points > 1000:
+        msg = await message.reply("⚠️ Слишком много баллов за раз. Максимум 1000 за одну операцию.")
         asyncio.create_task(delete_command_with_delay(message, msg, 5))
         return
     
@@ -1009,10 +1058,12 @@ async def update_prefix(message: types.Message):
 
 Примеры:
 /update @ulia - обновить префикс для @ulia
-/update 123456789 - обновить префикс для пользователя с ID 123456789"""
+/update 123456789 - обновить префикс для пользователя с ID 123456789
+
+⚠️ Важно: Команда с @username работает только если пользователь уже получал баллы в этом чате."""
         
         msg = await message.reply(help_text)
-        asyncio.create_task(delete_command_with_delay(message, msg, 10))
+        asyncio.create_task(delete_command_with_delay(message, msg, 15))
         return
 
     chat_id = message.chat.id
@@ -1041,28 +1092,24 @@ async def update_prefix(message: types.Message):
         found = False
         for user_id, user_data in chat_points.items():
             user_username = user_data.get('username', '').lstrip('@')
-            if user_username.lower() == username_input.lower():
+            if user_username and user_username.lower() == username_input.lower():
                 target_user_id = user_id
                 username = user_data.get('username', f"user_{user_id}")
                 found = True
                 break
         
         if not found:
-            # Пытаемся найти пользователя в чате по username
-            try:
-                # Пробуем получить ID пользователя через Telegram API
-                user_id_from_api = await get_user_id_from_mention(chat_id, username_input)
-                if user_id_from_api and user_id_from_api in chat_points:
-                    target_user_id = user_id_from_api
-                    username = chat_points[target_user_id].get('username', f"user_{target_user_id}")
-                else:
-                    msg = await message.reply(f"❌ Пользователь @{username_input} не найден в системе этого чата.")
-                    asyncio.create_task(delete_command_with_delay(message, msg))
-                    return
-            except:
-                msg = await message.reply(f"❌ Не удалось найти пользователя @{username_input}.")
-                asyncio.create_task(delete_command_with_delay(message, msg))
-                return
+            msg = await message.reply(f"""❌ Пользователь @{username_input} не найден в системе этого чата.
+
+Возможные причины:
+1. Пользователь еще не получал баллов в этом чате
+2. Username был изменен
+
+Как обновить префикс:
+• Используйте команду /add (ответом на сообщение пользователя) чтобы добавить балл
+• Узнайте ID пользователя и используйте: /update ID""")
+            asyncio.create_task(delete_command_with_delay(message, msg))
+            return
 
     # Получаем данные пользователя
     user_data = chat_points[target_user_id]
@@ -1128,6 +1175,10 @@ if __name__ == '__main__':
     print(f"   /plus @username N - добавить N баллов (создатель: {CREATOR_ID})")
     print(f"   /minus @username N - вычесть N баллов (создатель: {CREATOR_ID})")
     print(f"   /update @username - обновить префикс (создатель: {CREATOR_ID})")
+    print("\n⚠️ ВАЖНО О КОМАНДАХ С @USERNAME:")
+    print("   • Работают только если пользователь уже получал баллы в чате")
+    print("   • Для новых пользователей используйте /add (ответом на сообщение)")
+    print("   • Или сначала дайте пользователю балл через благодарность")
     print("\n⚠️ АВТОМАТИЧЕСКИЕ ДЕЙСТВИЯ:")
     print("   1. Бот автоматически делает пользователей администраторами")
     print("   2. Все административные права отключены (кроме приглашения)")
@@ -1138,7 +1189,7 @@ if __name__ == '__main__':
     print("   • Команды удаляются через 30 секунд")
     print("   • Каждая группа имеет отдельную базу данных")
     print("   • Бот игнорирует личные сообщения")
-    print("   • Максимум 100 баллов за одну операцию")
+    print("   • Максимум 1000 баллов за одну операцию")
     print("\n💬 Автоматическое повышение при словах:")
     print(f"   {', '.join(THANK_WORDS[:6])}...")
     print("=" * 60)
