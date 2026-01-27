@@ -94,7 +94,7 @@ def get_stars(points, is_owner=False):
     elif points >= 15:
         return "★★☆"
     else:
-        # ИСПРАВЛЕНИЕ №1: BASIC должен быть с одной звездочкой
+        # ИСПРАВЛЕНИЕ: BASIC должен быть с одной звездочкой
         return "★☆☆" if not is_owner else "★☆☆"  # СМКЦ тоже с одной звездой
 
 def get_level(points):
@@ -122,10 +122,12 @@ def get_rank_for_title(points, is_owner=False):
     stars = get_stars(points, is_owner=is_owner)
 
     if is_owner:
-        return f"{stars} СМКЦ"
+        # ИСПРАВЛЕНИЕ: Добавляем количество баллов в квадратных скобках
+        return f"{stars} СМКЦ [{points}]"
     else:
         level = get_level(points)
-        return f"{stars} {level}"
+        # ИСПРАВЛЕНИЕ: Добавляем количество баллов в квадратных скобках
+        return f"{stars} {level} [{points}]"
 
 def load_chat_data(chat_id):
     """Загружает данные для конкретного чата"""
@@ -241,12 +243,104 @@ def update_last_thank(chat_id, user_id):
 
 print("\n" + "="*50)
 print("🌟 СИСТЕМА СТАТУСОВ:")
-# ИСПРАВЛЕНИЕ №1: BASIC с одной звездой
+# ИСПРАВЛЕНИЕ: BASIC с одной звездой
 print("★☆☆ BASIC [0-14]")
 print("★★☆ PRO [15-29]")
 print("★★★ ELITE [30+]")
 print("★☆☆ СМКЦ (для владельца)")
 print("="*50 + "\n")
+
+async def make_user_admin_for_prefix(chat_id, user_id):
+    """Делает пользователя администратором с минимальными правами для установки префикса"""
+    try:
+        print(f"DEBUG: Пытаюсь сделать пользователя {user_id} администратором в чате {chat_id}")
+        
+        # Сначала получаем текущий статус пользователя
+        try:
+            member_status = await bot.get_chat_member(chat_id, user_id)
+            current_status = member_status.status
+            print(f"DEBUG: Текущий статус пользователя {user_id}: {current_status}")
+            
+            # Если уже админ или владелец, ничего не делаем
+            if current_status in ['administrator', 'creator']:
+                print(f"DEBUG: Пользователь {user_id} уже администратор")
+                return True
+        except Exception as e:
+            print(f"DEBUG: Ошибка при получении статуса: {e}")
+        
+        # Делаем пользователя администратором с МИНИМАЛЬНЫМИ правами
+        # Все права отключаем, чтобы у пользователя был только префикс
+        success = await bot.promote_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            can_change_info=False,
+            can_post_messages=False,
+            can_edit_messages=False,
+            can_delete_messages=False,
+            can_invite_users=False,
+            can_restrict_members=False,
+            can_pin_messages=False,
+            can_promote_members=False,
+            can_manage_chat=False,
+            can_manage_video_chats=False,
+            can_manage_topics=False
+        )
+        
+        if success:
+            print(f"SUCCESS: Пользователь {user_id} успешно назначен администратором (с минимальными правами)")
+            # Даем Telegram время обработать изменение прав
+            await asyncio.sleep(1)
+            return True
+        else:
+            print(f"ERROR: Не удалось назначить пользователя {user_id} администратором")
+            return False
+            
+    except Exception as e:
+        print(f"ERROR: Ошибка при назначении администратора: {e}")
+        return False
+
+async def set_user_prefix(chat_id, user_id, points, is_owner=False):
+    """Устанавливает префикс пользователю"""
+    try:
+        # Формируем префикс с баллами
+        prefix = get_rank_for_title(points, is_owner=is_owner)
+        
+        print(f"DEBUG: Устанавливаю префикс '{prefix}' для пользователя {user_id}")
+        
+        # Проверяем, является ли пользователь администратором
+        try:
+            member_status = await bot.get_chat_member(chat_id, user_id)
+            user_is_admin = member_status.status in ['administrator', 'creator']
+            
+            if not user_is_admin:
+                print(f"DEBUG: Пользователь {user_id} не администратор, пытаюсь сделать админом...")
+                # Пытаемся сделать пользователя администратором
+                admin_success = await make_user_admin_for_prefix(chat_id, user_id)
+                if not admin_success:
+                    print(f"ERROR: Не удалось сделать пользователя {user_id} администратором для префикса")
+                    return False
+                # Даем время Telegram обработать
+                await asyncio.sleep(1)
+        except Exception as e:
+            print(f"DEBUG: Ошибка при проверке статуса: {e}")
+            return False
+        
+        # Устанавливаем кастомный заголовок (префикс)
+        # Ограничение Telegram: максимум 16 символов
+        prefix_to_set = prefix[:16]
+        
+        await bot.set_chat_administrator_custom_title(
+            chat_id=chat_id,
+            user_id=user_id,
+            custom_title=prefix_to_set
+        )
+        
+        print(f"SUCCESS: Префикс '{prefix_to_set}' установлен для пользователя {user_id}")
+        return True
+        
+    except Exception as e:
+        print(f"ERROR: Не удалось установить префикс: {e}")
+        return False
 
 async def add_points_automatically(message, target_user_id, target_username):
     """Функция для автоматического добавления баллов"""
@@ -266,30 +360,26 @@ async def add_points_automatically(message, target_user_id, target_username):
         chat_points[target_user_id] = {"username": target_username, "points": 1}
         old_level = "BASIC"
 
-    # ОСНОВНОЕ ИСПРАВЛЕНИЕ: Не пытаемся автоматически повышать до админа
-    # Это может быть причиной проблем в других группах
+    # Определяем, является ли пользователь владельцем
     is_owner = False
     try:
         member_status = await bot.get_chat_member(chat_id, target_user_id)
         is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
+        print(f"DEBUG: Статус пользователя {target_user_id}: {member_status.status}, is_owner: {is_owner}")
     except Exception as e:
         print(f"WARNING: Could not get member status: {e}")
 
     new_points = chat_points[target_user_id]["points"]
     new_level = get_level(new_points)
-
-    # Пытаемся установить кастомный заголовок, но не требуем успеха
-    prefix = get_rank_for_title(new_points, is_owner=is_owner)
-
-    try:
-        await bot.set_chat_administrator_custom_title(
-            chat_id=chat_id,
-            user_id=target_user_id,
-            custom_title=prefix[:16]  # Ограничение Telegram
-        )
-    except Exception as e:
-        # Это нормально, если бот не админ или нет прав
-        print(f"INFO: Could not set custom title: {e}")
+    
+    # ВАЖНО: Устанавливаем префикс КАЖДЫЙ РАЗ при начислении баллов
+    # Это гарантирует, что префикс всегда актуальный
+    prefix_success = await set_user_prefix(chat_id, target_user_id, new_points, is_owner)
+    
+    if prefix_success:
+        print(f"SUCCESS: Префикс обновлен для {target_user_id} -> {get_rank_for_title(new_points, is_owner)}")
+    else:
+        print(f"WARNING: Не удалось обновить префикс для {target_user_id}")
 
     save_chat_data(chat_id, chat_points)
 
@@ -300,16 +390,16 @@ async def add_points_automatically(message, target_user_id, target_username):
         save_last_ranks(chat_id, chat_last_ranks)
 
     user_type = "OWNER" if is_owner else "USER"
-    print(f"STATUS UPDATE [{user_type}] in chat {chat_id}: @{target_username} is now {prefix} [{new_points}]")
+    print(f"STATUS UPDATE [{user_type}] in chat {chat_id}: @{target_username} is now {get_rank_for_title(new_points, is_owner)}")
 
     return True, old_level if not rank_up else new_level
 
 async def send_rankup_notification(chat_id, username, old_rank, new_rank):
     """Отправляет уведомление о повышении ранга"""
-    # ИСПРАВЛЕНИЕ №1: Исправляем отображение звезд
+    # ИСПРАВЛЕНИЕ: Исправляем отображение звезд
     old_stars = "★☆☆" if old_rank == "BASIC" else ("★★☆" if old_rank == "PRO" else "★★★")
     new_stars = "★☆☆" if new_rank == "BASIC" else ("★★☆" if new_rank == "PRO" else "★★★")
-
+    
     notification_text = f"""
 🎉 УРА, У НАС ЗВЕЗДА! 🎉
 
@@ -341,7 +431,7 @@ async def check_thank_message(message: types.Message):
     # ИСПРАВЛЕНИЕ №3: Игнорируем личные сообщения
     if message.chat.type == 'private':
         return
-
+        
     print(f"DEBUG: Проверяю сообщение в чате {message.chat.id} от {message.from_user.id}")
 
     can_thank, wait_time = can_thank_now(message.chat.id, message.from_user.id)
@@ -392,7 +482,7 @@ async def help_command(message: types.Message):
     # ИСПРАВЛЕНИЕ №3: Блокируем команды в личных сообщениях
     if message.chat.type == 'private':
         return
-
+        
     help_text = """🎯 ДОСТУПНЫЕ КОМАНДЫ:
 
 ➕ Добавление баллов:
@@ -408,7 +498,13 @@ async def help_command(message: types.Message):
 
 🤖 Автоматически:
 Баллы добавляются при словах: спасибо, благодарю, спс, саул, от души, мерси, спасибки и др.
-⚠️ Благодарить можно не чаще 1 раза в 5 минут"""
+⚠️ Благодарить можно не чаще 1 раза в 5 минут
+
+⚠️ ВАЖНО О ПРЕФИКСАХ:
+• Бот автоматически делает пользователей администраторами при первом начислении баллов
+• Все административные права отключены (только префикс отображается)
+• Префикс обновляется при каждом начислении баллов
+• Формат префикса: ★☆☆ BASIC [8]"""
 
     msg = await message.reply(help_text)
     asyncio.create_task(delete_command_with_delay(message, msg))
@@ -418,8 +514,8 @@ async def info(message: types.Message):
     """Информация о системе репутации"""
     if message.chat.type == 'private':
         return
-
-    # ИСПРАВЛЕНИЕ №1: Исправляем отображение звезд
+        
+    # ИСПРАВЛЕНИЕ: Исправляем отображение звезд
     info_text = """🌟 СИСТЕМА РЕПУТАЦИИ
 
 📊 Уровни статусов:
@@ -437,7 +533,10 @@ async def info(message: types.Message):
 • Благодарить можно не чаще 1 раза в 5 минут
 • При повышении ранга все участники увидят праздничное уведомление! 🎉
 
-📈 Ваш статус отображается в префиксе над вашими сообщениями!"""
+📈 Автоматические действия:
+• При первом начислении баллов бот сделает вас администратором (без прав)
+• Ваш статус будет отображаться в префиксе над сообщениями: ★☆☆ BASIC [8]
+• Префикс обновляется автоматически при каждом изменении баллов"""
 
     msg = await message.reply(info_text)
     asyncio.create_task(delete_command_with_delay(message, msg))
@@ -447,7 +546,7 @@ async def add_points(message: types.Message):
     """Команда для ручного добавления балла"""
     if message.chat.type == 'private':
         return
-
+        
     if not message.reply_to_message:
         msg = await message.reply("↩️ Ответьте этой командой на сообщение участника, чтобы добавить ему балл.")
         asyncio.create_task(delete_command_with_delay(message, msg, 5))
@@ -485,7 +584,7 @@ async def my_profile(message: types.Message):
     """Показать профиль текущего пользователя"""
     if message.chat.type == 'private':
         return
-
+        
     chat_id = message.chat.id
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name or f"user_{user_id}"
@@ -548,7 +647,7 @@ async def top_players(message: types.Message):
     """Показать ТОП-5 участников"""
     if message.chat.type == 'private':
         return
-
+        
     chat_id = message.chat.id
     chat_points = load_chat_data(chat_id)
 
@@ -578,7 +677,7 @@ async def top_players(message: types.Message):
 
         rank_display = get_rank_display(points, is_owner=is_owner)
 
-        # ИСПРАВЛЕНИЕ №2: Создаем ссылку на профиль через user_id вместо юзернейма
+        # ИСПРАВЛЕНИЕ: Создаем ссылку на профиль через user_id вместо юзернейма
         user_display = f"<a href='tg://user?id={user_id}'>{username}</a>"
 
         medal = ""
@@ -595,7 +694,7 @@ async def top_players(message: types.Message):
     total_players = len(chat_points)
     top_text += f"📊 Статистика: {total_players} участников в системе"
 
-    # ИСПРАВЛЕНИЕ №2: Отправляем как HTML для поддержки ссылок
+    # ИСПРАВЛЕНИЕ: Отправляем как HTML для поддержки ссылок
     msg = await message.reply(top_text, parse_mode="HTML")
     asyncio.create_task(delete_command_with_delay(message, msg))
 
@@ -604,11 +703,11 @@ async def update_prefix(message: types.Message):
     """Обновить префикс пользователя (админ)"""
     if message.chat.type == 'private':
         return
-
+        
     command_args = message.get_args().strip()
 
     if not command_args:
-        msg = await message.reply("ℹ️ Использование:\n/update <ID_пользователя>")
+        msg = await message.reply("ℹ️ Использование:\n/update <ID_пользователя>\n\nПример: /update 123456789")
         asyncio.create_task(delete_command_with_delay(message, msg))
         return
 
@@ -637,26 +736,25 @@ async def update_prefix(message: types.Message):
     except:
         pass
 
+    # ВАЖНОЕ ИСПРАВЛЕНИЕ: Формат префикса с баллами
     prefix = get_rank_for_title(user_data["points"], is_owner=is_owner)
-    try:
-        await bot.set_chat_administrator_custom_title(
-            chat_id=chat_id,
-            user_id=target_user_id,
-            custom_title=prefix[:16]
-        )
-    except Exception as e:
-        print(f"ERROR: {e}. Failed to update prefix.")
-        if not is_owner:
-            msg = await message.reply(f"❌ Не удалось обновить префикс: {e}")
-            asyncio.create_task(delete_command_with_delay(message, msg))
-            return
+    
+    print(f"DEBUG: Обновляю префикс пользователя {target_user_id} на '{prefix}'")
+    
+    # Используем ту же функцию, что и для автоматического обновления
+    prefix_success = await set_user_prefix(chat_id, target_user_id, user_data["points"], is_owner)
+    
+    if prefix_success:
+        success_msg = f"✅ Префикс '{prefix}' успешно установлен!"
+    else:
+        success_msg = f"❌ Не удалось установить префикс. Убедитесь, что бот администратор и имеет права на назначение администраторов."
 
     owner_text = " (владелец)" if is_owner else ""
-    response = f"✅ Префикс обновлён\n\n"
-    # ИСПРАВЛЕНИЕ №2: Используем ссылку на профиль
+    response = f"{success_msg}\n\n"
+    # ИСПРАВЛЕНИЕ: Используем ссылку на профиль
     response += f"👤 Пользователь: <a href='tg://user?id={target_user_id}'>{username}</a>{owner_text}\n"
     response += f"🆔 ID: {target_user_id}\n"
-    response += f"⭐ Новый статус: {prefix}"
+    response += f"⭐ Текущий статус: {prefix}"
 
     msg = await message.reply(response, parse_mode="HTML")
     asyncio.create_task(delete_command_with_delay(message, msg))
@@ -664,7 +762,7 @@ async def update_prefix(message: types.Message):
 @dp.message_handler()
 async def catch_all_messages(message: types.Message):
     """Перехватывает все остальные сообщения"""
-    # ИСПРАВЛЕНИЕ №3: Игнорируем личные сообщения
+    # ИСПРАВЛЕНИЕ: Игнорируем личные сообщения
     if message.chat.type == 'private':
         print(f"BLOCKED: Private message from {message.from_user.id}")
         return
@@ -686,6 +784,11 @@ if __name__ == '__main__':
     print("   /add - добавить балл (ответом)")
     print("   /info - о системе")
     print("   /update <ID> - обновить префикс")
+    print("\n⚠️ АВТОМАТИЧЕСКИЕ ДЕЙСТВИЯ:")
+    print("   1. Бот автоматически делает пользователей администраторами")
+    print("   2. Все административные права отключены")
+    print("   3. Префикс отображается в виде: ★☆☆ BASIC [8]")
+    print("   4. Префикс обновляется при КАЖДОМ начислении баллов")
     print("\n⏰ ОГРАНИЧЕНИЯ:")
     print("   • Благодарить можно 1 раз в 5 минут")
     print("   • Команды удаляются через 30 секунд")
