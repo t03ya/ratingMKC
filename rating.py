@@ -49,7 +49,7 @@ try:
 except (FileNotFoundError, ValueError):
     LANG = input("Enter the language('ru'/'eng'): ")
 
-    while LANG != "ru" and LANG != "eng':
+    while LANG != "ru" and LANG != "eng":
         LANG = input("Enter the language('ru'/'eng'): ")
 
     with open(LANG_FILE, 'w') as file:
@@ -291,128 +291,6 @@ async def get_user_id_from_mention(chat_id, username_input):
         print(f"ERROR: Не удалось найти пользователя @{username_input}: {e}")
         return None
 
-async def find_user_in_chat_by_username(chat_id, username):
-    """Пытается найти пользователя в чате по username (альтернативный метод)"""
-    # Этот метод может быть медленным для больших чатов
-    # Лучше использовать ID или ответ на сообщение
-    print(f"WARNING: Поиск по username может быть медленным. Рекомендуется использовать ID или ответ на сообщение.")
-    return None
-
-async def change_user_points(message, target_username, points_change, is_addition=True):
-    """Изменяет баллы пользователя и обновляет префикс"""
-    chat_id = message.chat.id
-    
-    # Получаем ID пользователя по username
-    user_id = await get_user_id_from_mention(chat_id, target_username)
-    
-    if not user_id:
-        # Пользователь не найден в сохраненных данных
-        # Предлагаем альтернативные варианты
-        error_msg = f"""❌ Пользователь @{target_username} не найден в системе этого чата.
-
-Возможные причины:
-1. Пользователь еще не получал баллов в этом чате
-2. Username был изменен
-
-Как добавить баллы:
-• Используйте команду /add (ответом на сообщение пользователя)
-• Узнайте ID пользователя и используйте: /update ID
-• Попросите пользователя получить хотя бы 1 балл через благодарность"""
-        
-        return False, error_msg
-    
-    # Загружаем данные чата
-    chat_points = load_chat_data(chat_id)
-    chat_last_ranks = load_last_ranks(chat_id)
-    
-    # Проверяем, есть ли пользователь в данных чата
-    if user_id not in chat_points:
-        # Пользователь есть в поиске, но нет в данных - добавляем
-        try:
-            # Получаем актуальный username
-            member = await bot.get_chat_member(chat_id, user_id)
-            current_username = member.user.username or member.user.first_name or f"user_{user_id}"
-            
-            # Инициализируем пользователя
-            if is_addition:
-                chat_points[user_id] = {"username": current_username, "points": points_change}
-                old_points = 0
-                new_points = points_change
-                action_word = "добавлено"
-            else:
-                # Нельзя вычитать у пользователя без баллов
-                return False, f"❌ Пользователь @{target_username} еще не имеет баллов"
-        except Exception as e:
-            print(f"ERROR: Не удалось получить информацию о пользователе {user_id}: {e}")
-            return False, f"❌ Ошибка при получении информации о пользователе @{target_username}"
-    else:
-        # Пользователь уже в системе - изменяем баллы
-        old_points = chat_points[user_id]["points"]
-        old_level = get_level(old_points)
-        
-        # Изменяем баллы
-        if is_addition:
-            new_points = old_points + points_change
-            action_word = "добавлено"
-        else:
-            new_points = max(0, old_points - points_change)  # Не меньше 0
-            action_word = "вычтено"
-        
-        chat_points[user_id]["points"] = new_points
-    
-    # Определяем, является ли пользователь владельцем
-    is_owner = False
-    try:
-        member_status = await bot.get_chat_member(chat_id, user_id)
-        is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
-    except:
-        pass
-    
-    new_level = get_level(new_points) if user_id in chat_points else "BASIC"
-    
-    # Устанавливаем/обновляем префикс
-    if not is_owner:
-        prefix_success = await set_user_prefix(chat_id, user_id, new_points, is_owner)
-        
-        if prefix_success:
-            prefix_msg = "✅ Префикс обновлен"
-        else:
-            prefix_msg = "⚠️ Префикс не обновлен (проверьте права бота)"
-    else:
-        prefix_msg = "👑 Владелец - префикс не требуется"
-    
-    # Сохраняем данные
-    save_chat_data(chat_id, chat_points)
-    
-    # Проверяем изменение ранга
-    rank_change = ""
-    if 'old_level' in locals() and old_level != new_level and not is_owner:
-        rank_change = f"\n🎉 Изменение ранга: {old_level} → {new_level}"
-        chat_last_ranks[user_id] = new_level
-        save_last_ranks(chat_id, chat_last_ranks)
-    
-    # Формируем сообщение
-    old_points_display = old_points if 'old_points' in locals() else 0
-    result_msg = f"""✅ Успешно!
-    
-👤 Пользователь: @{target_username}
-🆔 ID: {user_id}
-📊 Баллов {action_word}: {points_change}
-🏆 Было: {old_points_display} | Стало: {new_points}
-⭐ Новый статус: {get_rank_display(new_points, is_owner)}
-{prefix_msg}{rank_change}"""
-    
-    return True, result_msg
-
-print("\n" + "="*50)
-print("🌟 СИСТЕМА СТАТУСОВ:")
-# ИСПРАВЛЕНИЕ: BASIC с одной звездой
-print("★☆☆ BASIC [0-14]")
-print("★★☆ PRO [15-29]")
-print("★★★ ELITE [30+]")
-print("★☆☆ СМКЦ (для владельца)")
-print("="*50 + "\n")
-
 async def make_user_admin_for_prefix(chat_id, user_id):
     """Делает пользователя администратором с минимальными правами для установки префикса"""
     try:
@@ -551,6 +429,121 @@ async def set_user_prefix(chat_id, user_id, points, is_owner=False):
     except Exception as e:
         print(f"ERROR: Критическая ошибка при установке префикса: {e}")
         return False
+
+async def change_user_points(message, target_username, points_change, is_addition=True):
+    """Изменяет баллы пользователя и обновляет префикс"""
+    chat_id = message.chat.id
+    
+    # Получаем ID пользователя по username
+    user_id = await get_user_id_from_mention(chat_id, target_username)
+    
+    if not user_id:
+        # Пользователь не найден в сохраненных данных
+        # Предлагаем альтернативные варианты
+        error_msg = f"""❌ Пользователь @{target_username} не найден в системе этого чата.
+
+Возможные причины:
+1. Пользователь еще не получал баллов в этом чате
+2. Username был изменен
+
+Как добавить баллы:
+• Используйте команду /add (ответом на сообщение пользователя)
+• Узнайте ID пользователя и используйте: /update ID
+• Попросите пользователя получить хотя бы 1 балл через благодарность"""
+        
+        return False, error_msg
+    
+    # Загружаем данные чата
+    chat_points = load_chat_data(chat_id)
+    chat_last_ranks = load_last_ranks(chat_id)
+    
+    # Проверяем, есть ли пользователь в данных чата
+    if user_id not in chat_points:
+        # Пользователь есть в поиске, но нет в данных - добавляем
+        try:
+            # Получаем актуальный username
+            member = await bot.get_chat_member(chat_id, user_id)
+            current_username = member.user.username or member.user.first_name or f"user_{user_id}"
+            
+            # Инициализируем пользователя
+            if is_addition:
+                chat_points[user_id] = {"username": current_username, "points": points_change}
+                old_points = 0
+                new_points = points_change
+                action_word = "добавлено"
+            else:
+                # Нельзя вычитать у пользователя без баллов
+                return False, f"❌ Пользователь @{target_username} еще не имеет баллов"
+        except Exception as e:
+            print(f"ERROR: Не удалось получить информацию о пользователе {user_id}: {e}")
+            return False, f"❌ Ошибка при получении информации о пользователе @{target_username}"
+    else:
+        # Пользователь уже в системе - изменяем баллы
+        old_points = chat_points[user_id]["points"]
+        old_level = get_level(old_points)
+        
+        # Изменяем баллы
+        if is_addition:
+            new_points = old_points + points_change
+            action_word = "добавлено"
+        else:
+            new_points = max(0, old_points - points_change)  # Не меньше 0
+            action_word = "вычтено"
+        
+        chat_points[user_id]["points"] = new_points
+    
+    # Определяем, является ли пользователь владельцем
+    is_owner = False
+    try:
+        member_status = await bot.get_chat_member(chat_id, user_id)
+        is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
+    except:
+        pass
+    
+    new_level = get_level(new_points) if user_id in chat_points else "BASIC"
+    
+    # Устанавливаем/обновляем префикс
+    if not is_owner:
+        prefix_success = await set_user_prefix(chat_id, user_id, new_points, is_owner)
+        
+        if prefix_success:
+            prefix_msg = "✅ Префикс обновлен"
+        else:
+            prefix_msg = "⚠️ Префикс не обновлен (проверьте права бота)"
+    else:
+        prefix_msg = "👑 Владелец - префикс не требуется"
+    
+    # Сохраняем данные
+    save_chat_data(chat_id, chat_points)
+    
+    # Проверяем изменение ранга
+    rank_change = ""
+    if 'old_level' in locals() and old_level != new_level and not is_owner:
+        rank_change = f"\n🎉 Изменение ранга: {old_level} → {new_level}"
+        chat_last_ranks[user_id] = new_level
+        save_last_ranks(chat_id, chat_last_ranks)
+    
+    # Формируем сообщение
+    old_points_display = old_points if 'old_points' in locals() else 0
+    result_msg = f"""✅ Успешно!
+    
+👤 Пользователь: @{target_username}
+🆔 ID: {user_id}
+📊 Баллов {action_word}: {points_change}
+🏆 Было: {old_points_display} | Стало: {new_points}
+⭐ Новый статус: {get_rank_display(new_points, is_owner)}
+{prefix_msg}{rank_change}"""
+    
+    return True, result_msg
+
+print("\n" + "="*50)
+print("🌟 СИСТЕМА СТАТУСОВ:")
+# ИСПРАВЛЕНИЕ: BASIC с одной звездой
+print("★☆☆ BASIC [0-14]")
+print("★★☆ PRO [15-29]")
+print("★★★ ELITE [30+]")
+print("★☆☆ СМКЦ (для владельца)")
+print("="*50 + "\n")
 
 async def add_points_automatically(message, target_user_id, target_username):
     """Функция для автоматического добавления баллов"""
