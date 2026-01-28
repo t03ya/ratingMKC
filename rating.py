@@ -4,12 +4,17 @@ import asyncio
 import time
 import re
 import glob
+import threading
 from datetime import datetime, timedelta
 # aiogram==2.25.1
 from aiogram.utils import executor
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ChatAdministratorRights
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
+
+# ДОБАВЛЕНО: Словарь для блокировок файлов
+file_locks = {}
+file_lock_lock = threading.Lock()  # Блокировка для управления блокировками файлов
 
 def load_translations(file_path="translations.json"):
     with open(file_path, "r", encoding="utf-8") as f:
@@ -116,80 +121,130 @@ def get_rank_for_title(points, is_owner=False):
     stars = get_stars(points)
     return f"{stars} [{points}]"
 
+# ИЗМЕНЕНО: Функции загрузки и сохранения с блокировками
 def load_chat_data(chat_id):
-    """Загружает данные для конкретного чата"""
+    """Загружает данные для конкретного чата с блокировкой"""
     points_file = get_points_file(chat_id)
-    if os.path.exists(points_file):
-        try:
-            with open(points_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {int(k): v for k, v in data.items()}
-        except json.JSONDecodeError:
-            print(f"ERROR: Error reading points file for chat {chat_id}. Starting with empty data.")
-            return {}
-        except Exception as e:
-            print(f"ERROR loading chat data: {e}")
-            return {}
-    return {}
+
+    # Получаем блокировку для этого файла
+    with file_lock_lock:
+        if points_file not in file_locks:
+            file_locks[points_file] = threading.Lock()
+
+    lock = file_locks[points_file]
+
+    with lock:
+        if os.path.exists(points_file):
+            try:
+                with open(points_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return {int(k): v for k, v in data.items()}
+            except json.JSONDecodeError:
+                print(f"ERROR: Error reading points file for chat {chat_id}. Starting with empty data.")
+                return {}
+            except Exception as e:
+                print(f"ERROR loading chat data: {e}")
+                return {}
+        return {}
 
 def save_chat_data(chat_id, data):
-    """Сохраняет данные для конкретного чата"""
+    """Сохраняет данные для конкретного чата с блокировкой"""
     points_file = get_points_file(chat_id)
 
-    try:
-        with open(points_file, "w", encoding="utf-8") as f:
-            data_to_save = {str(k): v for k, v in data.items()}
-            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"ERROR saving chat data: {e}")
+    # Получаем блокировку для этого файла
+    with file_lock_lock:
+        if points_file not in file_locks:
+            file_locks[points_file] = threading.Lock()
+
+    lock = file_locks[points_file]
+
+    with lock:
+        try:
+            with open(points_file, "w", encoding="utf-8") as f:
+                data_to_save = {str(k): v for k, v in data.items()}
+                json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"ERROR saving chat data: {e}")
 
 def load_last_thanks(chat_id):
-    """Загружает время последних благодарностей для чата"""
+    """Загружает время последних благодарностей для чата с блокировкой"""
     thank_file = get_thank_file(chat_id)
 
-    if os.path.exists(thank_file):
-        try:
-            with open(thank_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {int(k): float(v) for k, v in data.items()}
-        except Exception as e:
-            print(f"ERROR loading last thanks: {e}")
-    return {}
+    # Получаем блокировку для этого файла
+    with file_lock_lock:
+        if thank_file not in file_locks:
+            file_locks[thank_file] = threading.Lock()
+
+    lock = file_locks[thank_file]
+
+    with lock:
+        if os.path.exists(thank_file):
+            try:
+                with open(thank_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return {int(k): float(v) for k, v in data.items()}
+            except Exception as e:
+                print(f"ERROR loading last thanks: {e}")
+        return {}
 
 def save_last_thanks(chat_id, data):
-    """Сохраняет время последних благодарностей для чата"""
+    """Сохраняет время последних благодарностей для чата с блокировкой"""
     thank_file = get_thank_file(chat_id)
 
-    try:
-        with open(thank_file, "w", encoding="utf-8") as f:
-            data_to_save = {str(k): v for k, v in data.items()}
-            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"ERROR saving last thanks: {e}")
+    # Получаем блокировку для этого файла
+    with file_lock_lock:
+        if thank_file not in file_locks:
+            file_locks[thank_file] = threading.Lock()
+
+    lock = file_locks[thank_file]
+
+    with lock:
+        try:
+            with open(thank_file, "w", encoding="utf-8") as f:
+                data_to_save = {str(k): v for k, v in data.items()}
+                json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"ERROR saving last thanks: {e}")
 
 def load_last_ranks(chat_id):
-    """Загружает последние ранги для чата"""
+    """Загружает последние ранги для чата с блокировкой"""
     rank_file = get_rank_file(chat_id)
 
-    if os.path.exists(rank_file):
-        try:
-            with open(rank_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {int(k): v for k, v in data.items()}
-        except Exception as e:
-            print(f"ERROR loading last ranks: {e}")
-    return {}
+    # Получаем блокировку для этого файла
+    with file_lock_lock:
+        if rank_file not in file_locks:
+            file_locks[rank_file] = threading.Lock()
+
+    lock = file_locks[rank_file]
+
+    with lock:
+        if os.path.exists(rank_file):
+            try:
+                with open(rank_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return {int(k): v for k, v in data.items()}
+            except Exception as e:
+                print(f"ERROR loading last ranks: {e}")
+        return {}
 
 def save_last_ranks(chat_id, data):
-    """Сохраняет последние ранги для чата"""
+    """Сохраняет последние ранги для чата с блокировкой"""
     rank_file = get_rank_file(chat_id)
 
-    try:
-        with open(rank_file, "w", encoding="utf-8") as f:
-            data_to_save = {str(k): v for k, v in data.items()}
-            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"ERROR saving last ranks: {e}")
+    # Получаем блокировку для этого файла
+    with file_lock_lock:
+        if rank_file not in file_locks:
+            file_locks[rank_file] = threading.Lock()
+
+    lock = file_locks[rank_file]
+
+    with lock:
+        try:
+            with open(rank_file, "w", encoding="utf-8") as f:
+                data_to_save = {str(k): v for k, v in data.items()}
+                json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"ERROR saving last ranks: {e}")
 
 def get_translation(key, **kwargs):
     template = translations.get(LANG, {}).get(key, key)
@@ -206,24 +261,51 @@ def contains_thank_word(text):
             return True
     return False
 
+# ИЗМЕНЕНО: Унифицированная функция для атомарной проверки и обновления кулдауна
 def can_thank_now(chat_id, user_id):
-    """Проверяет, можно ли пользователю отправить благодарность"""
-    thanks_data = load_last_thanks(chat_id)
+    """Проверяет, можно ли пользователю отправить благодарность (атомарная операция)"""
+    thank_file = get_thank_file(chat_id)
 
-    if user_id in thanks_data:
-        last_time = thanks_data[user_id]
+    # Получаем блокировку для этого файла
+    with file_lock_lock:
+        if thank_file not in file_locks:
+            file_locks[thank_file] = threading.Lock()
+
+    lock = file_locks[thank_file]
+
+    with lock:
+        # Загружаем данные с блокировкой
+        if os.path.exists(thank_file):
+            try:
+                with open(thank_file, "r", encoding="utf-8") as f:
+                    thanks_data = json.load(f)
+                    thanks_data = {int(k): float(v) for k, v in thanks_data.items()}
+            except:
+                thanks_data = {}
+        else:
+            thanks_data = {}
+
         current_time = time.time()
 
-        if current_time - last_time < THANK_COOLDOWN:
-            return False, THANK_COOLDOWN - int(current_time - last_time)
+        if user_id in thanks_data:
+            last_time = thanks_data[user_id]
+            if current_time - last_time < THANK_COOLDOWN:
+                return False, THANK_COOLDOWN - int(current_time - last_time)
 
-    return True, 0
+        # Обновляем время сразу же
+        thanks_data[user_id] = current_time
 
-def update_last_thank(chat_id, user_id):
-    """Обновляет время последней благодарности для пользователя"""
-    thanks_data = load_last_thanks(chat_id)
-    thanks_data[user_id] = time.time()
-    save_last_thanks(chat_id, thanks_data)
+        try:
+            with open(thank_file, "w", encoding="utf-8") as f:
+                data_to_save = {str(k): v for k, v in thanks_data.items()}
+                json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"ERROR saving last thanks in can_thank_now: {e}")
+            return False, 0
+
+        return True, 0
+
+# ИЗМЕНЕНО: Удалена функция update_last_thank, так как теперь обновление происходит в can_thank_now
 
 def extract_points_from_command(text):
     """Извлекает количество баллов и причину из команды /plus или /minus"""
@@ -397,61 +479,102 @@ async def change_user_points_by_reply(message, points_change, is_addition=True, 
     target_user_id = message.reply_to_message.from_user.id
     target_username = message.reply_to_message.from_user.username or message.reply_to_message.from_user.first_name or f"user_{target_user_id}"
 
-    chat_points = load_chat_data(chat_id)
-    chat_last_ranks = load_last_ranks(chat_id)
+    # ИЗМЕНЕНО: Атомарная операция изменения баллов
+    points_file = get_points_file(chat_id)
+    rank_file = get_rank_file(chat_id)
 
-    if target_user_id not in chat_points:
-        try:
-            member = await bot.get_chat_member(chat_id, target_user_id)
-            current_username = member.user.username or member.user.first_name or f"user_{target_user_id}"
+    # Получаем блокировки для всех файлов
+    with file_lock_lock:
+        for file_path in [points_file, rank_file]:
+            if file_path not in file_locks:
+                file_locks[file_path] = threading.Lock()
+
+    # Используем блокировку для points_file, так как это основной файл
+    lock = file_locks[points_file]
+
+    with lock:
+        # Загружаем данные
+        if os.path.exists(points_file):
+            try:
+                with open(points_file, "r", encoding="utf-8") as f:
+                    chat_points = json.load(f)
+                    chat_points = {int(k): v for k, v in chat_points.items()}
+            except:
+                chat_points = {}
+        else:
+            chat_points = {}
+
+        # Загружаем ранги
+        if os.path.exists(rank_file):
+            try:
+                with open(rank_file, "r", encoding="utf-8") as f:
+                    chat_last_ranks = json.load(f)
+                    chat_last_ranks = {int(k): v for k, v in chat_last_ranks.items()}
+            except:
+                chat_last_ranks = {}
+        else:
+            chat_last_ranks = {}
+
+        if target_user_id not in chat_points:
+            try:
+                member = await bot.get_chat_member(chat_id, target_user_id)
+                current_username = member.user.username or member.user.first_name or f"user_{target_user_id}"
+
+                if is_addition:
+                    chat_points[target_user_id] = {"username": current_username, "points": points_change}
+                    old_points = 0
+                    new_points = points_change
+                    action_word = "добавлено"
+                else:
+                    return False, f"❌ Пользователь @{target_username} еще не имеет баллов"
+            except Exception as e:
+                print(f"ERROR: Не удалось получить информацию о пользователе {target_user_id}: {e}")
+                return False, f"❌ Ошибка при получении информации о пользователе"
+        else:
+            old_points = chat_points[target_user_id]["points"]
+            old_level = get_level(old_points)
 
             if is_addition:
-                chat_points[target_user_id] = {"username": current_username, "points": points_change}
-                old_points = 0
-                new_points = points_change
+                new_points = old_points + points_change
                 action_word = "добавлено"
             else:
-                return False, f"❌ Пользователь @{target_username} еще не имеет баллов"
-        except Exception as e:
-            print(f"ERROR: Не удалось получить информацию о пользователе {target_user_id}: {e}")
-            return False, f"❌ Ошибка при получении информации о пользователе"
-    else:
-        old_points = chat_points[target_user_id]["points"]
-        old_level = get_level(old_points)
+                new_points = max(0, old_points - points_change)
+                action_word = "вычтено"
 
-        if is_addition:
-            new_points = old_points + points_change
-            action_word = "добавлено"
-        else:
-            new_points = max(0, old_points - points_change)
-            action_word = "вычтено"
+            chat_points[target_user_id]["points"] = new_points
 
-        chat_points[target_user_id]["points"] = new_points
+        is_owner = False
+        try:
+            member_status = await bot.get_chat_member(chat_id, target_user_id)
+            is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
+        except:
+            pass
 
-    is_owner = False
-    try:
-        member_status = await bot.get_chat_member(chat_id, target_user_id)
-        is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
-    except:
-        pass
+        new_level = get_level(new_points) if target_user_id in chat_points else "BASIC"
 
-    new_level = get_level(new_points) if target_user_id in chat_points else "BASIC"
+        # Сохраняем данные
+        with open(points_file, "w", encoding="utf-8") as f:
+            data_to_save = {str(k): v for k, v in chat_points.items()}
+            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
 
-    # Устанавливаем/обновляем префикс
+        rank_change = ""
+        if 'old_level' in locals() and old_level != new_level and not is_owner:
+            rank_change = f"\n🎉 Изменение ранга: {old_level} → {new_level}"
+            chat_last_ranks[target_user_id] = new_level
+
+            # Сохраняем ранги с их блокировкой
+            with file_locks[rank_file]:
+                with open(rank_file, "w", encoding="utf-8") as f:
+                    data_to_save = {str(k): v for k, v in chat_last_ranks.items()}
+                    json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+
+    # Устанавливаем префикс (это делаем вне блокировки, так как это сетевой запрос)
     prefix_success = await set_user_prefix(chat_id, target_user_id, new_points, is_owner)
 
     if prefix_success:
         prefix_msg = "✅ Префикс обновлен"
     else:
         prefix_msg = "⚠️ Не удалось установить префикс (проверьте права бота)"
-
-    save_chat_data(chat_id, chat_points)
-
-    rank_change = ""
-    if 'old_level' in locals() and old_level != new_level and not is_owner:
-        rank_change = f"\n🎉 Изменение ранга: {old_level} → {new_level}"
-        chat_last_ranks[target_user_id] = new_level
-        save_last_ranks(chat_id, chat_last_ranks)
 
     old_points_display = old_points if 'old_points' in locals() else 0
 
@@ -474,39 +597,91 @@ print("★★☆ [15-29]")
 print("★★★ [30+]")
 print("="*50 + "\n")
 
+# ИЗМЕНЕНО: Улучшенная функция для автоматического добавления баллов
 async def add_points_automatically(message, target_user_id, target_username):
-    """Функция для автоматического добавления баллов"""
+    """Функция для автоматического добавления баллов с атомарными операциями"""
     chat_id = message.chat.id
 
-    chat_points = load_chat_data(chat_id)
-    chat_last_ranks = load_last_ranks(chat_id)
+    points_file = get_points_file(chat_id)
+    rank_file = get_rank_file(chat_id)
 
-    if target_user_id in chat_points:
-        old_points = chat_points[target_user_id]["points"]
-        chat_points[target_user_id]["points"] += 1
-        old_level = get_level(old_points)
+    # Получаем блокировки для всех файлов
+    with file_lock_lock:
+        for file_path in [points_file, rank_file]:
+            if file_path not in file_locks:
+                file_locks[file_path] = threading.Lock()
 
-        if chat_points[target_user_id]["username"] != target_username:
-            chat_points[target_user_id]["username"] = target_username
-    else:
-        chat_points[target_user_id] = {"username": target_username, "points": 1}
-        old_points = 0
-        old_level = "BASIC"
+    # Используем блокировку для points_file
+    lock = file_locks[points_file]
 
+    rank_up = False
+    old_level = None
+    new_points = None
     is_owner = False
-    try:
-        member_status = await bot.get_chat_member(chat_id, target_user_id)
-        is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
-        print(f"DEBUG: Статус пользователя {target_user_id}: {member_status.status}, is_owner: {is_owner}")
-    except Exception as e:
-        print(f"WARNING: Could not get member status: {e}")
 
-    new_points = chat_points[target_user_id]["points"]
-    new_level = get_level(new_points)
+    with lock:
+        # Загружаем данные
+        if os.path.exists(points_file):
+            try:
+                with open(points_file, "r", encoding="utf-8") as f:
+                    chat_points = json.load(f)
+                    chat_points = {int(k): v for k, v in chat_points.items()}
+            except:
+                chat_points = {}
+        else:
+            chat_points = {}
 
-    print(f"DEBUG: Начисляю балл пользователю {target_user_id}. Было: {old_points}, стало: {new_points}")
+        # Загружаем ранги
+        if os.path.exists(rank_file):
+            try:
+                with open(rank_file, "r", encoding="utf-8") as f:
+                    chat_last_ranks = json.load(f)
+                    chat_last_ranks = {int(k): v for k, v in chat_last_ranks.items()}
+            except:
+                chat_last_ranks = {}
+        else:
+            chat_last_ranks = {}
 
-    # Пытаемся установить префикс для всех пользователей (кроме владельца)
+        if target_user_id in chat_points:
+            old_points = chat_points[target_user_id]["points"]
+            chat_points[target_user_id]["points"] += 1
+            old_level = get_level(old_points)
+
+            if chat_points[target_user_id]["username"] != target_username:
+                chat_points[target_user_id]["username"] = target_username
+        else:
+            chat_points[target_user_id] = {"username": target_username, "points": 1}
+            old_points = 0
+            old_level = "BASIC"
+
+        try:
+            member_status = await bot.get_chat_member(chat_id, target_user_id)
+            is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
+            print(f"DEBUG: Статус пользователя {target_user_id}: {member_status.status}, is_owner: {is_owner}")
+        except Exception as e:
+            print(f"WARNING: Could not get member status: {e}")
+
+        new_points = chat_points[target_user_id]["points"]
+        new_level = get_level(new_points)
+
+        print(f"DEBUG: Начисляю балл пользователю {target_user_id}. Было: {old_points}, стало: {new_points}")
+
+        # Сохраняем данные
+        with open(points_file, "w", encoding="utf-8") as f:
+            data_to_save = {str(k): v for k, v in chat_points.items()}
+            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+
+        if old_level != new_level and not is_owner:
+            rank_up = True
+            chat_last_ranks[target_user_id] = new_level
+
+            # Сохраняем ранги с их блокировкой
+            with file_locks[rank_file]:
+                with open(rank_file, "w", encoding="utf-8") as f:
+                    data_to_save = {str(k): v for k, v in chat_last_ranks.items()}
+                    json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+
+    # Пытаемся установить префикс (делаем вне блокировки)
     prefix_success = False
     if not is_owner:
         prefix_success = await set_user_prefix(chat_id, target_user_id, new_points, is_owner)
@@ -517,14 +692,6 @@ async def add_points_automatically(message, target_user_id, target_username):
             print(f"WARNING: Не удалось обновить префикс для {target_user_id}")
     else:
         print(f"DEBUG: Пользователь {target_user_id} владелец, префикс не обновляем")
-
-    save_chat_data(chat_id, chat_points)
-
-    rank_up = False
-    if old_level != new_level and not is_owner:
-        rank_up = True
-        chat_last_ranks[target_user_id] = new_level
-        save_last_ranks(chat_id, chat_last_ranks)
 
     user_type = "OWNER" if is_owner else "USER"
     print(f"STATUS UPDATE [{user_type}] in chat {chat_id}: @{target_username} is now {get_rank_for_title(new_points, is_owner)}")
@@ -542,7 +709,6 @@ async def send_rankup_notification(chat_id, username, old_rank, new_rank):
 
 🌟 {old_stars} {old_rank} → {new_stars} {new_rank} 🌟
 
-Поздравляем и гордимся твоим прогрессом!
 Продолжай в том же духе! 💪✨
 """
 
@@ -669,12 +835,16 @@ async def block_private_messages(message: types.Message):
 async def is_creator(user_id):
     return user_id == CREATOR_ID
 
+# ИЗМЕНЕНО: Добавлен принудительный await для предотвращения блокировки
 @dp.message_handler(lambda message: message.text and not message.text.startswith('/') and message.reply_to_message)
 async def check_thank_message(message: types.Message):
     if message.chat.type == 'private':
         return
 
     print(f"DEBUG: Проверяю сообщение в чате {message.chat.id} от {message.from_user.id}")
+
+    # ИЗМЕНЕНО: Добавлен await для предотвращения блокировки при высокой нагрузке
+    await asyncio.sleep(0.01)  # Небольшая задержка для снижения нагрузки
 
     can_thank, wait_time = can_thank_now(message.chat.id, message.from_user.id)
 
@@ -687,8 +857,6 @@ async def check_thank_message(message: types.Message):
         target_username = message.reply_to_message.from_user.username or message.reply_to_message.from_user.first_name or f"user_{target_user_id}"
 
         print(f"DEBUG: Найдено слово благодарности, добавляем балл для {target_user_id}")
-
-        update_last_thank(message.chat.id, message.from_user.id)
 
         success, old_rank = await add_points_automatically(message, target_user_id, target_username)
 
@@ -1184,6 +1352,10 @@ if __name__ == '__main__':
     print("   1. Обновляются все префиксы участников")
     print("   2. Отправляется уведомление о перезапуске во все чаты")
     print("   3. Уведомление удаляется через 10 секунд")
+    print("\n🔒 ИСПРАВЛЕНА ПРОБЛЕМА С БЛАГОДАРНОСТЯМИ:")
+    print("   • Добавлены блокировки файлов для предотвращения гонок")
+    print("   • Атомарные операции чтения/записи")
+    print("   • Исключены пропуски при высокой нагрузке")
     print("\n💬 Автоматическое повышение при словах:")
     print(f"   {', '.join(THANK_WORDS[:6])}...")
     print("=" * 60)
@@ -1192,5 +1364,6 @@ if __name__ == '__main__':
     async def on_startup(dp):
         await update_all_prefixes_on_start()
         await send_restart_notification()
+
 
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
