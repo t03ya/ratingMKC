@@ -305,8 +305,6 @@ def can_thank_now(chat_id, user_id):
 
         return True, 0
 
-# ИЗМЕНЕНО: Удалена функция update_last_thank, так как теперь обновление происходит в can_thank_now
-
 def extract_points_from_command(text):
     """Извлекает количество баллов и причину из команды /plus или /minus"""
     # Убираем команду и оставляем только аргументы
@@ -469,6 +467,45 @@ async def set_user_prefix(chat_id, user_id, points, is_owner=False):
         print(f"ERROR: Критическая ошибка при установке префикса: {e}")
         return False
 
+async def register_user_if_not_exists(chat_id, user_id, username):
+    """Регистрирует пользователя в базе данных, если его там еще нет"""
+    # Получаем блокировку для файла
+    points_file = get_points_file(chat_id)
+
+    with file_lock_lock:
+        if points_file not in file_locks:
+            file_locks[points_file] = threading.Lock()
+
+    lock = file_locks[points_file]
+
+    with lock:
+        # Загружаем данные
+        if os.path.exists(points_file):
+            try:
+                with open(points_file, "r", encoding="utf-8") as f:
+                    chat_points = json.load(f)
+                    chat_points = {int(k): v for k, v in chat_points.items()}
+            except:
+                chat_points = {}
+        else:
+            chat_points = {}
+
+        # Проверяем, есть ли пользователь в базе
+        if user_id not in chat_points:
+            chat_points[user_id] = {"username": username, "points": 0}
+
+            # Сохраняем данные
+            try:
+                with open(points_file, "w", encoding="utf-8") as f:
+                    data_to_save = {str(k): v for k, v in chat_points.items()}
+                    json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+                print(f"✅ Зарегистрирован новый пользователь: @{username} (ID: {user_id}) с рейтингом 0")
+                return True
+            except Exception as e:
+                print(f"❌ Ошибка при сохранении данных пользователя {user_id}: {e}")
+                return False
+        return False
+
 async def change_user_points_by_reply(message, points_change, is_addition=True, reason=""):
     """Изменяет баллы пользователя в ответ на сообщение и обновляет префикс"""
     chat_id = message.chat.id
@@ -478,6 +515,9 @@ async def change_user_points_by_reply(message, points_change, is_addition=True, 
 
     target_user_id = message.reply_to_message.from_user.id
     target_username = message.reply_to_message.from_user.username or message.reply_to_message.from_user.first_name or f"user_{target_user_id}"
+
+    # АВТОМАТИЧЕСКАЯ РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ, ЕСЛИ ЕГО НЕТ В БАЗЕ
+    await register_user_if_not_exists(chat_id, target_user_id, target_username)
 
     # ИЗМЕНЕНО: Атомарная операция изменения баллов
     points_file = get_points_file(chat_id)
@@ -515,33 +555,18 @@ async def change_user_points_by_reply(message, points_change, is_addition=True, 
         else:
             chat_last_ranks = {}
 
-        if target_user_id not in chat_points:
-            try:
-                member = await bot.get_chat_member(chat_id, target_user_id)
-                current_username = member.user.username or member.user.first_name or f"user_{target_user_id}"
+        # Теперь пользователь точно есть в базе (мы его зарегистрировали)
+        old_points = chat_points[target_user_id]["points"]
+        old_level = get_level(old_points)
 
-                if is_addition:
-                    chat_points[target_user_id] = {"username": current_username, "points": points_change}
-                    old_points = 0
-                    new_points = points_change
-                    action_word = "добавлено"
-                else:
-                    return False, f"❌ Пользователь @{target_username} еще не имеет баллов"
-            except Exception as e:
-                print(f"ERROR: Не удалось получить информацию о пользователе {target_user_id}: {e}")
-                return False, f"❌ Ошибка при получении информации о пользователе"
+        if is_addition:
+            new_points = old_points + points_change
+            action_word = "добавлено"
         else:
-            old_points = chat_points[target_user_id]["points"]
-            old_level = get_level(old_points)
+            new_points = max(0, old_points - points_change)
+            action_word = "вычтено"
 
-            if is_addition:
-                new_points = old_points + points_change
-                action_word = "добавлено"
-            else:
-                new_points = max(0, old_points - points_change)
-                action_word = "вычтено"
-
-            chat_points[target_user_id]["points"] = new_points
+        chat_points[target_user_id]["points"] = new_points
 
         is_owner = False
         try:
@@ -550,7 +575,7 @@ async def change_user_points_by_reply(message, points_change, is_addition=True, 
         except:
             pass
 
-        new_level = get_level(new_points) if target_user_id in chat_points else "BASIC"
+        new_level = get_level(new_points)
 
         # Сохраняем данные
         with open(points_file, "w", encoding="utf-8") as f:
@@ -558,7 +583,7 @@ async def change_user_points_by_reply(message, points_change, is_addition=True, 
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
 
         rank_change = ""
-        if 'old_level' in locals() and old_level != new_level and not is_owner:
+        if old_level != new_level and not is_owner:
             rank_change = f"\n🎉 Изменение ранга: {old_level} → {new_level}"
             chat_last_ranks[target_user_id] = new_level
 
@@ -576,15 +601,13 @@ async def change_user_points_by_reply(message, points_change, is_addition=True, 
     else:
         prefix_msg = "⚠️ Не удалось установить префикс (проверьте права бота)"
 
-    old_points_display = old_points if 'old_points' in locals() else 0
-
     # Формируем сообщение с причиной
     reason_text = f"\n📝 Причина: {reason}" if reason else ""
 
     result_msg = f"""✅ Успешно! {action_word} {points_change} баллов.
 
 👤 Пользователь: @{target_username}
-📊 Было: {old_points_display} | Стало: {new_points}
+📊 Было: {old_points} | Стало: {new_points}
 ⭐ Новый статус: {get_rank_display(new_points, is_owner)}
 {prefix_msg}{rank_change}{reason_text}"""
 
@@ -601,6 +624,9 @@ print("="*50 + "\n")
 async def add_points_automatically(message, target_user_id, target_username):
     """Функция для автоматического добавления баллов с атомарными операциями"""
     chat_id = message.chat.id
+
+    # АВТОМАТИЧЕСКАЯ РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ, ЕСЛИ ЕГО НЕТ В БАЗЕ
+    await register_user_if_not_exists(chat_id, target_user_id, target_username)
 
     points_file = get_points_file(chat_id)
     rank_file = get_rank_file(chat_id)
@@ -642,17 +668,13 @@ async def add_points_automatically(message, target_user_id, target_username):
         else:
             chat_last_ranks = {}
 
-        if target_user_id in chat_points:
-            old_points = chat_points[target_user_id]["points"]
-            chat_points[target_user_id]["points"] += 1
-            old_level = get_level(old_points)
+        # Теперь пользователь точно есть в базе
+        old_points = chat_points[target_user_id]["points"]
+        chat_points[target_user_id]["points"] += 1
+        old_level = get_level(old_points)
 
-            if chat_points[target_user_id]["username"] != target_username:
-                chat_points[target_user_id]["username"] = target_username
-        else:
-            chat_points[target_user_id] = {"username": target_username, "points": 1}
-            old_points = 0
-            old_level = "BASIC"
+        if chat_points[target_user_id]["username"] != target_username:
+            chat_points[target_user_id]["username"] = target_username
 
         try:
             member_status = await bot.get_chat_member(chat_id, target_user_id)
@@ -728,6 +750,46 @@ async def delete_command_with_delay(message, response_msg, delay=COMMAND_DELETE_
         await bot.delete_message(chat_id=response_msg.chat.id, message_id=response_msg.message_id)
     except Exception as e:
         print(f"ERROR deleting messages: {e}")
+
+async def register_all_chat_members(chat_id):
+    """Регистрирует всех участников чата в базе данных с рейтингом 0"""
+    try:
+        print(f"🔄 Регистрирую всех участников чата {chat_id}")
+
+        # Получаем список участников чата
+        members_count = 0
+        registered_count = 0
+
+        try:
+            # Пробуем получить участников (может не работать в больших группах)
+            async for member in bot.get_chat_members(chat_id, limit=200):
+                members_count += 1
+                user_id = member.user.id
+                username = member.user.username or member.user.first_name or f"user_{user_id}"
+
+                # Загружаем текущие данные
+                chat_points = load_chat_data(chat_id)
+
+                # Если пользователя еще нет в базе, добавляем его
+                if user_id not in chat_points:
+                    chat_points[user_id] = {"username": username, "points": 0}
+                    registered_count += 1
+
+                # Сохраняем обновленные данные
+                save_chat_data(chat_id, chat_points)
+
+                # Небольшая задержка чтобы не спамить API
+                await asyncio.sleep(0.05)
+
+        except Exception as e:
+            print(f"⚠️ Не удалось получить всех участников чата {chat_id}: {e}")
+
+        print(f"✅ В чате {chat_id}: {members_count} участников, зарегистрировано новых: {registered_count}")
+        return registered_count
+
+    except Exception as e:
+        print(f"❌ Ошибка при регистрации участников чата {chat_id}: {e}")
+        return 0
 
 async def update_all_prefixes_on_start():
     """Обновляет все префиксы при запуске бота"""
@@ -827,6 +889,54 @@ async def send_restart_notification():
 
     print(f"✅ Уведомления о перезапуске отправлены! Успешно: {successful_sends}, Неудачно: {failed_sends}")
 
+# ДОБАВЛЕНО: Обработчик для новых участников чата
+@dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
+async def on_new_chat_members(message: types.Message):
+    """Обработчик для новых участников чата (включая бота)"""
+    chat_id = message.chat.id
+
+    print(f"🆕 Новые участники в чате {chat_id}")
+
+    # Обрабатываем всех новых участников
+    for new_member in message.new_chat_members:
+        user_id = new_member.id
+        username = new_member.username or new_member.first_name or f"user_{user_id}"
+
+        # Если это сам бот
+        if user_id == bot.id:
+            print(f"🤖 Бот добавлен в чат {chat_id}")
+            # Даем боту время на инициализацию
+            await asyncio.sleep(2)
+            continue
+
+        print(f"🆕 Новый участник: @{username} (ID: {user_id})")
+
+        # Регистрируем пользователя с рейтингом 0
+        registered = await register_user_if_not_exists(chat_id, user_id, username)
+
+        if registered:
+            # Даем небольшую задержку перед установкой префикса
+            await asyncio.sleep(3)
+
+            # Проверяем, является ли пользователь владельцем
+            is_owner = False
+            try:
+                member_status = await bot.get_chat_member(chat_id, user_id)
+                is_owner = member_status.status == 'creator'
+            except Exception as e:
+                print(f"DEBUG: Не удалось получить статус пользователя {user_id}: {e}")
+
+            # Устанавливаем префикс
+            prefix_success = await set_user_prefix(chat_id, user_id, 0, is_owner)
+
+            if prefix_success:
+                print(f"✅ Автоматически установлен префикс новому участнику @{username}")
+            else:
+                print(f"⚠️ Не удалось установить префикс новому участнику @{username}")
+
+        # Небольшая задержка между обработкой участников
+        await asyncio.sleep(1)
+
 @dp.message_handler(lambda message: message.chat.type == 'private')
 async def block_private_messages(message: types.Message):
     print(f"BLOCKED: Private message from {message.from_user.id}: {message.text}")
@@ -897,11 +1007,11 @@ async def help_command(message: types.Message):
 /info - информация о системе репутации - удаляется через 60 секунд
 
 ⚙️ Админ-команды:
-/update @username - обновить префикс пользователя (только создатель)*
-/update 123456789 - обновить префикс по ID (только создатель)
+/update - обновить префиксы ВСЕХ участников (только создатель)*
 
 🤖 Автоматически:
-Баллы добавляются при словах: спасибо, благодарю, спс, саул, от души, мерси, спасибки и др.
+• При входе в группу участник автоматически получает префикс ★☆☆ [0]
+• Баллы добавляются при словах: спасибо, благодарю, спс, саул, от души, мерси, спасибки и др.
 ⚠️ Благодарить можно не чаще 1 раза в 5 минут
 ✅ +1 балл за благодарность удаляется через 10 секунд
 
@@ -918,7 +1028,7 @@ async def help_command(message: types.Message):
 
 📝 *Примечание: Команды /plus и /minus работают ТОЛЬКО как ответ на сообщение.
    Формат: /plus 10 за хорошее поведение
-   Формат: /minus 5 за плохое поведение{creator_info}"""
+   Формат: /minus 5 за опоздание{creator_info}"""
 
     msg = await message.reply(help_text)
     asyncio.create_task(delete_command_with_delay(message, msg, 60))
@@ -947,14 +1057,14 @@ async def info(message: types.Message):
 • +1 балл за благодарность - удаляется через 10 секунд
 • Команды /plus и /minus - удаляются через 30 секунд
 
+🤖 АВТОМАТИЧЕСКИ:
+• Новые участники автоматически получают префикс ★☆☆ [0]
+• Префикс обновляется при каждом изменении баллов
+• Бот сам сделает вас администратором при начислении баллов
+
 ⏱️ Правила:
 • Благодарить можно не чаще 1 раза в 5 минут
 • При повышении ранга все участники увидят праздничное уведомление! 🎉
-
-📈 Автоматические действия:
-• При начислении баллов бот сделает вас администратором (без прав)
-• Ваш статус будет отображаться в префиксе: ★☆☆ [8]
-• Префикс обновляется автоматически при каждом изменении баллов
 
 👑 Создатель: ID {CREATOR_ID}"""
 
@@ -1107,6 +1217,9 @@ async def my_profile(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name or f"user_{user_id}"
 
+    # АВТОМАТИЧЕСКАЯ РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ, ЕСЛИ ЕГО НЕТ В БАЗЕ
+    await register_user_if_not_exists(chat_id, user_id, username)
+
     chat_points = load_chat_data(chat_id)
 
     if user_id in chat_points:
@@ -1210,11 +1323,17 @@ async def top_players(message: types.Message):
         top_text += f"   └─ {rank_display}\n\n"
 
     total_players = len(chat_points)
-    top_text += f"📊 Статистика: {total_players} участников в системе"
+
+    # Подсчитываем пользователей с 0 баллами
+    zero_points_players = sum(1 for user_data in chat_points.values() if user_data['points'] == 0)
+
+    top_text += f"📊 Статистика:\n• Всего участников: {total_players}\n• С 0 баллами: {zero_points_players}\n\n"
+    top_text += f"💡 Новые участники автоматически получают префикс ★☆☆ [0]"
 
     msg = await message.reply(top_text, parse_mode="HTML")
     asyncio.create_task(delete_command_with_delay(message, msg, 60))  # 60 секунд для /top
 
+# ИЗМЕНЕНО: Команда /update теперь регистрирует всех участников и обновляет префиксы
 @dp.message_handler(commands=["update", "u"])
 async def update_prefix(message: types.Message):
     if message.chat.type == 'private':
@@ -1226,92 +1345,98 @@ async def update_prefix(message: types.Message):
         asyncio.create_task(delete_command_with_delay(message, msg, 5))
         return
 
-    command_args = message.get_args().strip()
-
-    if not command_args:
-        help_text = """⚙️ Обновление префикса пользователя (только создатель):
-
-/update @username - обновить префикс пользователя (можно тегнуть)
-/update 123456789 - обновить префикс по ID
-
-Примеры:
-/update @ulia - обновить префикс для @ulia
-/update 123456789 - обновить префикс для пользователя с ID 123456789
-
-⚠️ Важно: Команда с @username работает только если пользователь уже получал баллы в этом чате."""
-
-        msg = await message.reply(help_text)
-        asyncio.create_task(delete_command_with_delay(message, msg, 15))
-        return
-
     chat_id = message.chat.id
-    chat_points = load_chat_data(chat_id)
 
-    target_user_id = None
-    username = None
+    # Отправляем сообщение о начале обновления
+    status_msg = await message.reply("🔄 Начинаю обновление префиксов всех участников...")
 
-    if command_args.isdigit():
-        target_user_id = int(command_args)
-        if target_user_id in chat_points:
-            username = chat_points[target_user_id].get('username', f"user_{target_user_id}")
-        else:
-            msg = await message.reply(f"❌ Пользователь с ID {target_user_id} не найден в системе этого чата.")
-            asyncio.create_task(delete_command_with_delay(message, msg))
-            return
-    else:
-        username_input = command_args.lstrip('@')
-
-        found = False
-        for user_id, user_data in chat_points.items():
-            user_username = user_data.get('username', '').lstrip('@')
-            if user_username and user_username.lower() == username_input.lower():
-                target_user_id = user_id
-                username = user_data.get('username', f"user_{user_id}")
-                found = True
-                break
-
-        if not found:
-            msg = await message.reply(f"""❌ Пользователь @{username_input} не найден в системе этого чата.
-
-Возможные причины:
-1. Пользователь еще не получал баллов в этом чате
-2. Username был изменен
-
-Как обновить префикс:
-• Используйте команду /add (ответом на сообщение пользователя) чтобы добавить балл
-• Узнайте ID пользователя и используйте: /update ID""")
-            asyncio.create_task(delete_command_with_delay(message, msg))
-            return
-
-    user_data = chat_points[target_user_id]
-    display_username = username or user_data.get('username', f"user_{target_user_id}")
-
-    is_owner = False
     try:
-        member_status = await bot.get_chat_member(chat_id, target_user_id)
-        is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
-    except:
-        pass
+        # Сначала регистрируем всех участников чата
+        registered = await register_all_chat_members(chat_id)
 
-    prefix = get_rank_for_title(user_data["points"], is_owner=is_owner)
+        # Загружаем данные чата
+        chat_points = load_chat_data(chat_id)
 
-    print(f"DEBUG: Обновляю префикс пользователя {target_user_id} (@{display_username}) на '{prefix}'")
+        if not chat_points:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text="❌ В чате нет зарегистрированных участников"
+            )
+            asyncio.create_task(delete_command_with_delay(message, status_msg, 10))
+            return
 
-    prefix_success = await set_user_prefix(chat_id, target_user_id, user_data["points"], is_owner)
+        print(f"🔄 Обновляю префиксы для чата {chat_id} ({len(chat_points)} пользователей)")
 
-    if prefix_success:
-        success_msg = f"✅ Префикс '{prefix}' успешно установлен!"
-    else:
-        success_msg = f"❌ Не удалось установить префикс. Убедитесь, что бот администратор и имеет права на назначение администраторов."
+        updated_count = 0
+        failed_count = 0
 
-    owner_text = " (владелец)" if is_owner else ""
-    response = f"{success_msg}\n\n"
-    response += f"👤 Пользователь: <a href='tg://user?id={target_user_id}'>{display_username}</a>{owner_text}\n"
-    response += f"🆔 ID: {target_user_id}\n"
-    response += f"⭐ Текущий статус: {prefix}"
+        # Обновляем префиксы для каждого пользователя
+        for user_id, user_data in chat_points.items():
+            try:
+                points = user_data["points"]
 
-    msg = await message.reply(response, parse_mode="HTML")
-    asyncio.create_task(delete_command_with_delay(message, msg))
+                # Проверяем, является ли пользователь владельцем
+                is_owner = False
+                try:
+                    member_status = await bot.get_chat_member(chat_id, user_id)
+                    is_owner = member_status.status in ['creator', 'владелец', 'Владелец']
+                except Exception as e:
+                    print(f"DEBUG: Не удалось получить статус пользователя {user_id}: {e}")
+
+                # Обновляем префикс
+                prefix_success = await set_user_prefix(chat_id, user_id, points, is_owner)
+                if prefix_success:
+                    updated_count += 1
+                    print(f"✅ Префикс обновлен для пользователя {user_id}")
+                else:
+                    failed_count += 1
+                    print(f"⚠️ Не удалось обновить префикс для пользователя {user_id}")
+
+                # Обновляем статус каждые 5 пользователей
+                if (updated_count + failed_count) % 5 == 0:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=status_msg.message_id,
+                        text=f"🔄 Обновление префиксов...\nОбработано: {updated_count + failed_count}/{len(chat_points)}\nУспешно: {updated_count}, Неудачно: {failed_count}"
+                    )
+
+                await asyncio.sleep(0.5)  # Небольшая задержка чтобы не спамить API
+
+            except Exception as e:
+                failed_count += 1
+                print(f"❌ Ошибка при обновлении префикса для пользователя {user_id}: {e}")
+
+        # Финальное сообщение
+        result_text = f"""✅ Обновление префиксов завершено!
+
+📊 Статистика:
+👥 Всего участников: {len(chat_points)}
+✅ Успешно обновлено: {updated_count}
+❌ Не удалось обновить: {failed_count}
+➕ Зарегистрировано новых: {registered}
+
+💡 Не удачные обновления обычно происходят из-за:
+1. Бот не имеет прав администратора
+2. Пользователь заблокировал бота
+3. Пользователь вышел из чата"""
+
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status_msg.message_id,
+            text=result_text
+        )
+
+        # Удаляем сообщения через 30 секунд
+        asyncio.create_task(delete_command_with_delay(message, status_msg, 30))
+
+    except Exception as e:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status_msg.message_id,
+            text=f"❌ Ошибка при обновлении префиксов: {str(e)[:100]}..."
+        )
+        asyncio.create_task(delete_command_with_delay(message, status_msg, 10))
 
 @dp.message_handler()
 async def catch_all_messages(message: types.Message):
@@ -1334,6 +1459,10 @@ if __name__ == '__main__':
     print("   • /my - 10 секунд")
     print("   • +1 балл за благодарность - 10 секунд")
     print("   • Команды /plus и /minus - 30 секунд")
+    print("\n🤖 АВТОМАТИЧЕСКИЕ ФУНКЦИИ:")
+    print("   • Новые участники получают префикс ★☆☆ [0]")
+    print("   • Автоматическая регистрация при первом взаимодействии")
+    print("   • Обновление префиксов при запуске бота")
     print("\n🎯 ДОСТУПНЫЕ КОМАНДЫ ДЛЯ ВСЕХ:")
     print("   /help - все команды")
     print("   /my - мой профиль (удаляется через 10 секунд)")
@@ -1343,7 +1472,7 @@ if __name__ == '__main__':
     print("\n🔐 ЗАЩИЩЕННЫЕ КОМАНДЫ (ТОЛЬКО СОЗДАТЕЛЬ):")
     print(f"   /plus N причина - добавить N баллов (создатель: {CREATOR_ID})")
     print(f"   /minus N причина - вычесть N баллов (создатель: {CREATOR_ID})")
-    print(f"   /update @username - обновить префикс (создатель: {CREATOR_ID})")
+    print(f"   /update - обновить префиксы всех участников (создатель: {CREATOR_ID})")
     print("\n⚠️ ВАЖНО О КОМАНДАХ /PLUS И /MINUS:")
     print("   • Работают ТОЛЬКО как ответ на сообщение")
     print("   • Формат: /plus 10 за хорошее поведение")
