@@ -11,7 +11,7 @@ from collections import defaultdict
 # aiogram==2.25.1
 from aiogram.utils import executor
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ChatAdministratorRights
+from aiogram.types import ChatAdministratorRights, MessageReactionUpdated
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 
 # Глобальные очереди для обработки благодарностей
@@ -37,8 +37,11 @@ CREATOR_ID = 8331388910 # ID создателя (ваш ID) - ЗАЩИЩЕННЫ
 THANK_WORDS = ["спасибо", "благодарю", "спс", "саул", "от души", "мерси", "спасибки",
                "thanks", "thank you", "thx", "благодарствуйте", "пасиб"]
 
-# Время между благодарностями (5 минут в секундах)
-THANK_COOLDOWN = 300  # 5 минут
+# ДОБАВЛЕНО: Эмодзи для реакции рукопожатия
+HANDSHAKE_EMOJI = "🤝"
+
+# ИЗМЕНЕНО: Удалено время между благодарностями
+# Теперь можно благодарить без ограничений
 
 # Время удаления командных сообщений (30 секунд) - по умолчанию
 COMMAND_DELETE_TIME = 30
@@ -219,28 +222,11 @@ def contains_thank_word(text):
             return True
     return False
 
-# НОВАЯ: Функция для атомарной проверки кулдауна с обработкой ошибок
+# ИЗМЕНЕНО: Упрощенная функция - всегда возвращает True (нет ограничений)
 async def can_thank_now(chat_id, user_id):
     """Проверяет, можно ли пользователю отправить благодарность"""
-    try:
-        thanks_data = load_last_thanks(chat_id)
-        current_time = time.time()
-
-        if user_id in thanks_data:
-            last_time = thanks_data[user_id]
-            if current_time - last_time < THANK_COOLDOWN:
-                wait_time = THANK_COOLDOWN - int(current_time - last_time)
-                return False, wait_time
-
-        # Обновляем время
-        thanks_data[user_id] = current_time
-        save_last_thanks(chat_id, thanks_data)
-        return True, 0
-
-    except Exception as e:
-        print(f"⚠️ Ошибка в can_thank_now: {e}")
-        # В случае ошибки разрешаем поблагодарить
-        return True, 0
+    # Теперь всегда возвращаем True - ограничений нет
+    return True, 0
 
 def extract_points_from_command(text):
     """Извлекает количество баллов и причину из команды /plus или /minus"""
@@ -466,9 +452,9 @@ print("★★★ [30+]")
 print("="*50 + "\n")
 
 # НОВАЯ: Улучшенная функция для обработки благодарностей
-async def process_thank_task(chat_id, sender_id, target_user_id, target_username, message_id):
-    """Обрабатывает одну благодарность"""
-    print(f"🔄 Обработка благодарности: от {sender_id} для {target_user_id} в чате {chat_id}")
+async def process_thank_task(chat_id, sender_id, target_user_id, target_username, message_id, reaction=False):
+    """Обрабатывает одну благодарность или реакцию"""
+    print(f"🔄 Обработка {'реакции' if reaction else 'благодарности'}: от {sender_id} для {target_user_id} в чате {chat_id}")
 
     try:
         # Регистрируем пользователя если нужно
@@ -511,43 +497,58 @@ async def process_thank_task(chat_id, sender_id, target_user_id, target_username
         if not is_owner:
             await set_user_prefix(chat_id, target_user_id, new_points, is_owner)
 
-        # Отправляем уведомление
-        try:
-            thank_msg = "✅ +1 балл за благодарность!"
-            msg = await bot.send_message(chat_id=chat_id, text=thank_msg, reply_to_message_id=message_id)
-
-            # Удаляем через 10 секунд
-            await asyncio.sleep(10)
+        # Отправляем уведомление (только для реакций или если не reaction)
+        if reaction:
             try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
-            except:
-                pass
-        except Exception as e:
-            print(f"⚠️ Не удалось отправить уведомление: {e}")
+                thank_msg = f"✅ +1 балл за реакцию {HANDSHAKE_EMOJI}!"
+                msg = await bot.send_message(chat_id=chat_id, text=thank_msg, reply_to_message_id=message_id)
+
+                # Удаляем через 10 секунд
+                await asyncio.sleep(10)
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
+                except:
+                    pass
+            except Exception as e:
+                print(f"⚠️ Не удалось отправить уведомление: {e}")
+        else:
+            # Для обычных благодарностей отправляем уведомление
+            try:
+                thank_msg = "✅ +1 балл за благодарность!"
+                msg = await bot.send_message(chat_id=chat_id, text=thank_msg, reply_to_message_id=message_id)
+
+                # Удаляем через 10 секунд
+                await asyncio.sleep(10)
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
+                except:
+                    pass
+            except Exception as e:
+                print(f"⚠️ Не удалось отправить уведомление: {e}")
 
         # Если было повышение ранга, отправляем уведомление
         if old_level != new_level and not is_owner:
             await send_rankup_notification(chat_id, target_username, old_level, new_level)
 
-        print(f"✅ Благодарность успешно обработана")
+        print(f"✅ {'Реакция' if reaction else 'Благодарность'} успешно обработана")
         return True
 
     except Exception as e:
-        print(f"❌ Ошибка при обработке благодарности: {e}")
+        print(f"❌ Ошибка при обработке {'реакции' if reaction else 'благодарности'}: {e}")
         import traceback
         traceback.print_exc()
         return False
 
 # НОВАЯ: Функция для добавления задачи в очередь
-async def add_thank_to_queue(chat_id, sender_id, target_user_id, target_username, message_id):
-    """Добавляет благодарность в очередь на обработку"""
+async def add_thank_to_queue(chat_id, sender_id, target_user_id, target_username, message_id, reaction=False):
+    """Добавляет благодарность или реакцию в очередь на обработку"""
     try:
         # Создаем уникальный ключ для этой операции
         operation_key = f"{chat_id}_{sender_id}_{target_user_id}_{time.time()}"
 
         # Создаем задачу обработки
         task = asyncio.create_task(
-            process_thank_task(chat_id, sender_id, target_user_id, target_username, message_id)
+            process_thank_task(chat_id, sender_id, target_user_id, target_username, message_id, reaction)
         )
 
         # Сохраняем задачу
@@ -567,6 +568,25 @@ async def add_thank_to_queue(chat_id, sender_id, target_user_id, target_username
     except Exception as e:
         print(f"❌ Ошибка при добавлении в очередь: {e}")
         return False
+
+# ДОБАВЛЕНО: Функция для проверки наличия реакции рукопожатия
+def has_handshake_reaction(reactions):
+    """Проверяет, есть ли среди реакций рукопожатие 🤝"""
+    if not reactions:
+        return False
+
+    for reaction in reactions:
+        # Проверяем разные типы реакции
+        if hasattr(reaction, 'emoji'):
+            if hasattr(reaction.emoji, 'emoji'):
+                # Это обычный эмодзи (ReactionTypeEmoji)
+                if reaction.emoji.emoji == HANDSHAKE_EMOJI:
+                    return True
+            elif isinstance(reaction.emoji, str):
+                # Это строковый эмодзи
+                if reaction.emoji == HANDSHAKE_EMOJI:
+                    return True
+    return False
 
 async def send_rankup_notification(chat_id, username, old_rank, new_rank):
     old_stars = "★☆☆" if old_rank == "BASIC" else ("★★☆" if old_rank == "PRO" else "★★★")
@@ -785,6 +805,73 @@ async def on_new_chat_members(message: types.Message):
         # Небольшая задержка между обработкой участников
         await asyncio.sleep(1)
 
+# ДОБАВЛЕНО: Обработчик для реакций на сообщения
+@dp.message_reaction_handler()
+async def handle_message_reaction(reaction_update: MessageReactionUpdated):
+    """Обрабатывает реакции на сообщения"""
+    chat_id = reaction_update.chat.id
+
+    print(f"🎯 Обновление реакции в чате {chat_id}")
+
+    # Проверяем новую реакцию
+    if reaction_update.new_reaction:
+        # Проверяем, есть ли реакция 🤝
+        has_handshake = False
+
+        for reaction in reaction_update.new_reaction:
+            if hasattr(reaction, 'emoji'):
+                if hasattr(reaction.emoji, 'emoji'):
+                    # Это обычный эмодзи (ReactionTypeEmoji)
+                    if reaction.emoji.emoji == HANDSHAKE_EMOJI:
+                        has_handshake = True
+                        break
+                elif isinstance(reaction.emoji, str):
+                    # Это строковый эмодзи
+                    if reaction.emoji == HANDSHAKE_EMOJI:
+                        has_handshake = True
+                        break
+
+        if has_handshake:
+            print(f"🎯 Найдена реакция 🤝 в чате {chat_id}")
+
+            try:
+                # Получаем информацию о сообщении, на которое поставили реакцию
+                message = await bot.get_message(chat_id, reaction_update.message_id)
+
+                # Получаем ID автора сообщения
+                target_user_id = message.from_user.id
+                target_username = message.from_user.username or message.from_user.first_name or f"user_{target_user_id}"
+
+                # ID пользователя, который поставил реакцию
+                reactor_id = reaction_update.user.id
+
+                # Проверяем, чтобы пользователь не начислял баллы сам себе
+                if target_user_id == reactor_id:
+                    print(f"⚠️ Пользователь {target_user_id} пытается начислить баллы сам себе")
+                    return
+
+                print(f"🔄 Обработка реакции 🤝: {reactor_id} → {target_user_id}")
+
+                # Используем ту же систему обработки что и для благодарностей
+                success = await add_thank_to_queue(
+                    chat_id=chat_id,
+                    sender_id=reactor_id,
+                    target_user_id=target_user_id,
+                    target_username=target_username,
+                    message_id=reaction_update.message_id,
+                    reaction=True
+                )
+
+                if success:
+                    print(f"✅ Балл за реакцию 🤝 успешно начислен")
+                else:
+                    print(f"❌ Ошибка при начислении балла за реакцию")
+
+            except Exception as e:
+                print(f"❌ Ошибка при обработке реакции: {e}")
+                import traceback
+                traceback.print_exc()
+
 @dp.message_handler(lambda message: message.chat.type == 'private')
 async def block_private_messages(message: types.Message):
     print(f"BLOCKED: Private message from {message.from_user.id}: {message.text}")
@@ -811,14 +898,8 @@ async def check_thank_message(message: types.Message):
     print(f"📥 Получено сообщение от {message.from_user.id} в чате {message.chat.id}")
     print(f"📝 Текст: '{message.text[:50]}...'")
 
-    # Проверяем кулдаун (быстрая проверка)
-    can_thank, wait_time = await can_thank_now(message.chat.id, message.from_user.id)
-
-    if not can_thank:
-        print(f"⏰ Кулдаун для {message.from_user.id}: {wait_time} сек")
-        return
-
-    # Проверяем наличие слов благодарности
+    # ИЗМЕНЕНО: Убрана проверка кулдауна, теперь всегда можно благодарить
+    # Просто проверяем наличие слов благодарности
     if not contains_thank_word(message.text):
         return
 
@@ -873,7 +954,7 @@ async def help_command(message: types.Message):
 🤖 Автоматически:
 • При входе в группу участник автоматически получает префикс ★☆☆ [0]
 • Баллы добавляются при словах: спасибо, благодарю, спс, саул, от души, мерси, спасибки и др.
-⚠️ Благодарить можно не чаще 1 раза в 5 минут
+• Баллы добавляются за реакцию 🤝 (рукопожатие) на сообщение
 ✅ +1 балл за благодарность удаляется через 10 секунд
 
 ⭐ ФОРМАТ ПРЕФИКСОВ:
@@ -909,8 +990,9 @@ async def info(message: types.Message):
 🎯 Как получать баллы:
 1. Ответьте /add на полезное сообщение
 2. Поблагодарите участника словами: спасибо, благодарю, спс, саул, от души, мерси, спасибки
-3. Получайте благодарности от других участников
-4. Создатель может добавлять баллы командой /plus (ответом на сообщение)
+3. Поставьте реакцию 🤝 (рукопожатие) на сообщение участника
+4. Получайте благодарности и реакции от других участников
+5. Создатель может добавлять баллы командой /plus (ответом на сообщение)
 
 ⏰ Время удаления сообщений:
 • /info и /top - удаляются через 60 секунд
@@ -922,10 +1004,9 @@ async def info(message: types.Message):
 • Новые участники автоматически получают префикс ★☆☆ [0]
 • Префикс обновляется при каждом изменении баллов
 • Бот сам сделает вас администратором при начислении баллов
+• Благодарить и ставить реакции можно без ограничений!
 
-⏱️ Правила:
-• Благодарить можно не чаще 1 раза в 5 минут
-• При повышении ранга все участники увидят праздничное уведомление! 🎉
+🎉 При повышении ранга все участники увидят праздничное уведомление! 🎉
 
 👑 Создатель: ID {CREATOR_ID}"""
 
@@ -1329,8 +1410,10 @@ if __name__ == '__main__':
     print("   • Новые участники получают префикс ★☆☆ [0]")
     print("   • Автоматическая регистрация при первом взаимодействии")
     print("   • Обновление префиксов при запуске бота")
+    print("   • Благодарить и ставить реакции можно без ограничений!")
+    print(f"   • Реакция {HANDSHAKE_EMOJI} добавляет +1 балл")
     print("\n🔧 УЛУЧШЕНИЯ:")
-    print("   • Гарантированная обработка всех благодарностей")
+    print("   • Гарантированная обработка всех благодарностей и реакций")
     print("   • Система очередей для предотвращения пропусков")
     print("   • Улучшенное логирование")
     print("\n🎯 ДОСТУПНЫЕ КОМАНДЫ ДЛЯ ВСЕХ:")
@@ -1351,8 +1434,9 @@ if __name__ == '__main__':
     print("   1. Обновляются все префиксы участников")
     print("   2. Отправляется уведомление о перезапуске во все чаты")
     print("   3. Уведомление удаляется через 10 секунд")
-    print("\n💬 Автоматическое повышение при словах:")
-    print(f"   {', '.join(THANK_WORDS[:6])}...")
+    print("\n💬 Автоматическое повышение при:")
+    print(f"   • Словах благодарности: {', '.join(THANK_WORDS[:6])}...")
+    print(f"   • Реакции: {HANDSHAKE_EMOJI} (рукопожатие)")
     print("=" * 60)
 
     # Запускаем обновление префиксов и отправку уведомлений при старте
